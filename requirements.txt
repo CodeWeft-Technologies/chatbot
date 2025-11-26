@@ -4,8 +4,11 @@ psycopg[binary]==3.2.3
 python-dotenv==1.0.1
 sentence-transformers==3.2.1
 groq==0.11.0
-llama-index==0.11.18
+
+# ✅ Compatible llama-index versions
+llama-index==0.13.0
 llama-index-vector-stores-supabase==0.4.1
+
 supabase==2.5.0
 pydantic==2.9.2
 pydantic-settings==2.11.0
