@@ -827,21 +827,35 @@ def get_embed_snippet(bot_id: str, org_id: str, widget: str = "bubble", authoriz
                 + "</script>"
             )
         def iframe():
-            inner = (
-                "<!doctype html><html><head><meta charset=\"utf-8\"></head><body>"
-                + "<div id=\"app\" style=\"font-family:sans-serif;font-size:14px\"></div>"
-                + "<script>"
-                + f"var O='{org_id}',K='{key or ''}',U='{url}';"
-                + "function s(m,cb){var h={'Content-Type':'application/json','X-Bot-Key':K};var b=JSON.stringify({message:m,org_id:O});fetch(U,{method:'POST',headers:h,body:b}).then(function(r){var rd=r.body.getReader();var d=new TextDecoder();function n(){rd.read().then(function(x){if(x.done){cb(null,true);return;}var t=d.decode(x.value);t.split('\n\n').forEach(function(l){if(l.indexOf('data: ')==0){cb(l.slice(6),false);}});n();});}n();});}"
-                + "var c=document.getElementById('app');var a=document.createElement('div');a.style.whiteSpace='pre-wrap';var i=document.createElement('input');i.type='text';i.placeholder='Ask a question';i.style.width='100%';var go=document.createElement('button');go.textContent='Send';c.appendChild(a);c.appendChild(i);c.appendChild(go);go.onclick=function(){a.textContent='';var q=i.value;i.value='';s(q,function(tok,end){if(end){return;}a.textContent+=tok;});};"
-                + "</script>"
-                + "</body></html>"
+            js = (
+                "(function(){\n"
+                "var C=window.chatbotConfig||{};var B=C.botId,O=C.orgId;var A=C.apiBase||'"+base+"';var K=C.botKey||null;var T='"+theme+"';var W=C.welcome||'';var N=C.title||C.name||C.botName||'Chatbot';var I=C.icon||'';\n"
+                "if(!O){return;}\n"
+                "function send(m,onchunk){var h={'Content-Type':'application/json'};if(K){h['X-Bot-Key']=K;}var b=JSON.stringify({message:m,org_id:O});try{fetch(A+'/api/chat/stream/'+B,{method:'POST',headers:h,body:b}).then(function(r){var rd=r.body.getReader();var d=new TextDecoder();function pump(){rd.read().then(function(x){if(x.done){onchunk(null,true);return;}var t=d.decode(x.value);t.split('\\n\\n').forEach(function(l){if(l.indexOf('data: ')==0){onchunk(l.slice(6),false);}});pump();});}pump();});}catch(e){onchunk('Error: streaming not available',true);} }\n"
+                "function esc(s){return (s||'').toString().replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}\n"
+                "function md(s){return esc(s||'');}\n"
+                "function add(parent,type,text){var row=document.createElement('div');row.style.display='flex';row.style.margin='10px 0';row.style.justifyContent=type==='me'?'flex-end':'flex-start';var b=document.createElement('div');b.style.maxWidth='80%';b.style.padding='12px 14px';b.style.borderRadius='16px';b.style.lineHeight='1.6';b.style.fontSize='14px';b.style.whiteSpace='normal';b.style.boxShadow='0 6px 18px rgba(0,0,0,0.08)';if(type==='me'){b.style.background=T==='dark'?'#1f2937':'linear-gradient(135deg,#3b82f6,#2563eb)';b.style.color='#fff';b.style.borderBottomRightRadius='8px';}else{b.style.background=T==='dark'?'#111827':'#ffffff';b.style.color=T==='dark'?'#e5e7eb':'#0f172a';b.style.border='1px solid '+(T==='dark'?'#374151':'#e5e7eb');b.style.borderBottomLeftRadius='8px';}if(text){b.innerHTML=md(text);}row.appendChild(b);parent.appendChild(row);parent.scrollTop=parent.scrollHeight;return b;}\n"
+                "function ui(){\n"
+                "  var w=document.createElement('div');w.style.position='fixed';w.style.bottom='24px';w.style.right='24px';w.style.zIndex='99999';\n"
+                "  var b=document.createElement('button');b.style.width='48px';b.style.height='48px';b.style.display='inline-flex';b.style.alignItems='center';b.style.justifyContent='center';b.style.border='none';b.style.borderRadius='999px';b.style.background='transparent';b.style.cursor='pointer';b.style.boxShadow='0 6px 18px rgba(0,0,0,0.08)';b.style.transition='transform .15s ease';b.innerHTML=(I?I:'<svg width=24 height=24 viewBox=\'0 0 24 24\' fill=\'none\' xmlns=\'http://www.w3.org/2000/svg\'><path d=\'M12 2C6.48 2 2 5.58 2 10c0 2.38 1.4 4.52 3.7 5.94L6 22l5.41-2.77C12.27 19.3 12.63 19.5 13 19.5c5.52 0 10-3.58 10-8.5S17.52 2 12 2z\' fill=\'#2563eb\'></path></svg>');\n"
+                "  b.onmouseenter=function(){b.style.transform='translateY(-4px)';};b.onmouseleave=function(){b.style.transform='translateY(0)';};\n"
+                "  // typing badge\n"
+                "  var btnBadge=document.createElement('span');btnBadge.style.position='absolute';btnBadge.style.top='-6px';btnBadge.style.right='-6px';btnBadge.style.minWidth='18px';btnBadge.style.height='18px';btnBadge.style.padding='0 4px';btnBadge.style.borderRadius='12px';btnBadge.style.display='none';btnBadge.style.alignItems='center';btnBadge.style.justifyContent='center';btnBadge.style.fontSize='12px';btnBadge.style.lineHeight='18px';btnBadge.style.background='rgba(37,99,235,0.95)';btnBadge.style.color='#fff';btnBadge.style.fontWeight='700';btnBadge.textContent='';try{b.style.position='relative';b.appendChild(btnBadge);}catch(_){ }\n"
+                "  b._typingInterval=null;function setButtonTyping(on){if(on){b.setAttribute('aria-busy','true');btnBadge.style.display='flex';var i=0;btnBadge.textContent='.';if(b._typingInterval)clearInterval(b._typingInterval);b._typingInterval=setInterval(function(){i=(i+1)%4;btnBadge.textContent=new Array(i+1).join('.');},350);}else{b.removeAttribute('aria-busy');btnBadge.style.display='none';btnBadge.textContent='';if(b._typingInterval){clearInterval(b._typingInterval);b._typingInterval=null;}}}\n"
+                "  var p=document.createElement('div');p.style.position='fixed';p.style.bottom='84px';p.style.right='24px';p.style.width='380px';p.style.maxWidth='92vw';p.style.background=T==='dark'?'#0b1220':'#fff';p.style.border='1px solid '+(T==='dark'?'#1f2937':'#e5e7eb');p.style.boxShadow='0 20px 48px rgba(0,0,0,0.12)';p.style.borderRadius='12px';p.style.display='none';p.style.overflow='hidden';\n"
+                "  var hd=document.createElement('div');hd.style.padding='12px 14px';hd.style.display='flex';hd.style.alignItems='center';hd.style.gap='10px';var av=document.createElement('div');av.style.width='32px';av.style.height='32px';av.style.borderRadius='8px';av.style.background='#2563eb';av.style.color='#fff';av.style.display='inline-flex';av.style.alignItems='center';av.style.justifyContent='center';av.innerHTML=(I||'🤖');var ttl=document.createElement('div');ttl.style.fontWeight='700';ttl.style.color=T==='dark'?'#e5e7eb':'#0f172a';ttl.textContent=N||'Chatbot';hd.appendChild(av);hd.appendChild(ttl);\n"
+                "  var body=document.createElement('div');body.style.height='320px';body.style.overflow='auto';body.style.padding='12px';body.style.background=T==='dark'?'#071021':'#fff';\n"
+                "  var inr=document.createElement('div');inr.style.display='flex';inr.style.gap='8px';inr.style.padding='10px';inr.style.borderTop='1px solid '+(T==='dark'?'#111827':'#e5e7eb');var input=document.createElement('input');input.type='text';input.placeholder='Ask a question';input.style.flex='1';input.style.padding='10px';input.style.border='1px solid '+(T==='dark'?'#111827':'#e5e7eb');input.style.borderRadius='10px';var sendBtn=document.createElement('button');sendBtn.textContent='Send';sendBtn.style.padding='10px 12px';sendBtn.style.borderRadius='10px';sendBtn.style.border='none';sendBtn.style.background='#2563eb';sendBtn.style.color='#fff';inr.appendChild(input);inr.appendChild(sendBtn);\n"
+                "  p.appendChild(hd);p.appendChild(body);p.appendChild(inr);\n"
+                "  document.body.appendChild(w);document.body.appendChild(b);document.body.appendChild(p);\n"
+                "  function open(){p.style.display='block';requestAnimationFrame(function(){p.style.opacity='1';p.style.transform='translateY(0) scale(1)';});}function close(){p.style.opacity='0';p.style.transform='translateY(6px) scale(0.98)';setTimeout(function(){p.style.display='none';},160);}b.onclick=function(){if(p.style.display==='none'){open();}else{close();}};\n"
+                "  function doSend(){var m=input.value.trim();if(!m){return;}input.value='';var me=add(body,'me',m);var bot=add(body,'bot','');var acc='';try{setButtonTyping(true);}catch(_){ }send(m,function(tok,end){if(end){try{setButtonTyping(false);}catch(_){ }return;}acc+=tok;bot.innerHTML=md(acc);});}\n"
+                "  sendBtn.onclick=doSend;input.onkeydown=function(e){if((e.key||e.keyCode)==='Enter'||e.keyCode===13){e.preventDefault();doSend();}}\n"
+                "}\n"
+                "ui();\n"
+                "})();\n"
             )
-            return (
-                "<script>"
-                + "(function(){var f=document.createElement('iframe');f.style.width='380px';f.style.height='480px';f.style.border='1px solid #e5e7eb';document.body.appendChild(f);var doc=f.contentWindow.document;doc.open();doc.write('" + inner.replace("\\","\\\\").replace("'","\\'") + "');doc.close();})();"
-                + "</script>"
-            )
+            return js
         snippet = cdn() if widget == "cdn" else bubble() if widget == "bubble" else inline() if widget == "inline" else iframe()
         return {"snippet": snippet, "widget": widget}
     finally:
