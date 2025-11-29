@@ -302,7 +302,8 @@ def create_bot(body: CreateBotBody, authorization: Optional[str] = Header(defaul
 
 @router.get("/bots")
 def list_bots(org_id: str, authorization: Optional[str] = Header(default=None)):
-    _require_auth(authorization, org_id)
+    if authorization:
+        _require_auth(authorization, org_id)
     conn = get_conn()
     try:
         org_n = normalize_org_id(org_id)
@@ -800,8 +801,8 @@ def get_embed_snippet(bot_id: str, org_id: str, widget: str = "bubble", authoriz
         def cdn():
             js = (
                 "<!-- Chatbot widget: required botId, orgId, apiBase; optional botKey -->"
-                f"<script>window.chatbotConfig={{botId:'{bot_id}',orgId:'{org_id}',apiBase:'{base}',botKey:'{key or ''}',welcome:'{wmsg_js}',botName:'',icon:''}};</script>"
-                "<!-- Optional keys: botName (header/button), icon (emoji/avatar), welcome (first bot message) -->"
+                f"<script>(function(){{var C=window.chatbotConfig||{{}};window.chatbotConfig=Object.assign({{}},C,{{botId:'{bot_id}',orgId:'{org_id}',apiBase:'{base}',botKey:'{key or ''}',botName:'',icon:''}});}})();</script>"
+                "<!-- Optional keys: botName (header/button), icon (emoji/avatar), welcome/greeting (first bot message) -->"
                 f"<script src='{base}/api/widget.js' async></script>"
             )
             return js
@@ -809,9 +810,9 @@ def get_embed_snippet(bot_id: str, org_id: str, widget: str = "bubble", authoriz
             return (
                 "<script>"
                 + "(function(){"
-                + f"var B='{bot_id}',O='{org_id}',K='{key or ''}',U='{url}',T='{theme}',W='{wmsg_js}';"
+                + f"var B='{bot_id}',O='{org_id}',K='{key or ''}',U='{url}',T='{theme}';"
                 + "function s(m,cb){var h={'Content-Type':'application/json','X-Bot-Key':K};var b=JSON.stringify({message:m,org_id:O});fetch(U,{method:'POST',headers:h,body:b}).then(function(r){var rd=r.body.getReader();var d=new TextDecoder();function n(){rd.read().then(function(x){if(x.done){cb(null,true);return;}var t=d.decode(x.value);t.split('\\n\\n').forEach(function(l){if(l.indexOf('data: ')==0){cb(l.slice(6),false);}});n();});}n();});}"
-                + "function ui(){var w=document.createElement('div');w.style.position='fixed';w.style.bottom='24px';w.style.right='24px';w.style.zIndex='99999';var b=document.createElement('button');b.textContent='Chat';b.style.padding='12px 16px';b.style.borderRadius='999px';b.style.border='none';b.style.background=T==='dark'?'#333':'#0ea5e9';b.style.color=T==='dark'?'#eee':'#fff';var p=document.createElement('div');p.style.position='fixed';p.style.bottom='96px';p.style.right='24px';p.style.width='360px';p.style.maxHeight='60vh';p.style.display='none';p.style.boxShadow='0 8px 24px rgba(0,0,0,0.15)';p.style.borderRadius='12px';p.style.background=T==='dark'?'#111':'#fff';p.style.color=T==='dark'?'#eee':'#111';p.style.padding='12px';var a=document.createElement('div');a.style.whiteSpace='pre-wrap';a.style.fontFamily='system-ui, sans-serif';a.style.fontSize='14px';a.style.lineHeight='1.4';var i=document.createElement('input');i.type='text';i.placeholder='Ask a question';i.style.width='100%';i.style.marginTop='8px';i.style.padding='10px';i.style.border=T==='dark'?'1px solid #333':'1px solid #e5e7eb';i.style.borderRadius='8px';var go=document.createElement('button');go.textContent='Send';go.style.marginTop='8px';go.style.padding='8px 12px';go.style.borderRadius='8px';go.style.border='none';go.style.background=T==='dark'?'#444':'#0ea5e9';go.style.color=T==='dark'?'#eee':'#fff';p.appendChild(a);p.appendChild(i);p.appendChild(go);w.appendChild(b);document.body.appendChild(w);document.body.appendChild(p);b.onclick=function(){p.style.display=p.style.display==='none'?'block':'none';if(a.textContent===''&&W){a.textContent=W;}};go.onclick=function(){a.textContent='';var q=i.value;i.value='';s(q,function(tok,end){if(end){return;}a.textContent+=tok;});};}ui();"
+                + "function ui(){var w=document.createElement('div');w.style.position='fixed';w.style.bottom='24px';w.style.right='24px';w.style.zIndex='99999';var b=document.createElement('button');b.textContent='Chat';b.style.padding='12px 16px';b.style.borderRadius='999px';b.style.border='none';b.style.background=T==='dark'?'#333':'#0ea5e9';b.style.color=T==='dark'?'#eee':'#fff';var p=document.createElement('div');p.style.position='fixed';p.style.bottom='96px';p.style.right='24px';p.style.width='360px';p.style.maxHeight='60vh';p.style.display='none';p.style.boxShadow='0 8px 24px rgba(0,0,0,0.15)';p.style.borderRadius='12px';p.style.background=T==='dark'?'#111':'#fff';p.style.color=T==='dark'?'#eee':'#111';p.style.padding='12px';var a=document.createElement('div');a.style.whiteSpace='pre-wrap';a.style.fontFamily='system-ui, sans-serif';a.style.fontSize='14px';a.style.lineHeight='1.4';var i=document.createElement('input');i.type='text';i.placeholder='Ask a question';i.style.width='100%';i.style.marginTop='8px';i.style.padding='10px';i.style.border=T==='dark'?'1px solid #333':'1px solid #e5e7eb';i.style.borderRadius='8px';var go=document.createElement('button');go.textContent='Send';go.style.marginTop='8px';go.style.padding='8px 12px';go.style.borderRadius='8px';go.style.border='none';go.style.background=T==='dark'?'#444':'#0ea5e9';go.style.color=T==='dark'?'#eee':'#fff';var shownWelcome=false;p.appendChild(a);p.appendChild(i);p.appendChild(go);w.appendChild(b);document.body.appendChild(w);document.body.appendChild(p);b.onclick=function(){p.style.display=p.style.display==='none'?'block':'none';var W0=(window.chatbotConfig&&(window.chatbotConfig.welcome||window.chatbotConfig.greeting))||'';if(a.textContent===''&&W0){a.textContent=W0;shownWelcome=true;}};go.onclick=function(){var q=i.value;if(!q.trim()){return;}i.value='';var m0=q.toLowerCase();var isG=(m0==='hi'||m0==='hello'||m0==='hey'||m0==='hola'||m0==='hii'||m0.startsWith('hi ')||m0.startsWith('hello ')||m0.startsWith('hey '));var W0=(window.chatbotConfig&&(window.chatbotConfig.welcome||window.chatbotConfig.greeting))||'';if(isG && W0){if(!shownWelcome){a.textContent=W0;shownWelcome=true;}return;}a.textContent='';s(q,function(tok,end){if(end){return;}a.textContent+=tok;});};}ui();"
                 + "})();"
                 + "</script>"
             )
@@ -822,7 +823,7 @@ def get_embed_snippet(bot_id: str, org_id: str, widget: str = "bubble", authoriz
                 + "(function(){"
                 + f"var O='{org_id}',K='{key or ''}',U='{url}';"
                 + "function s(m,cb){var h={'Content-Type':'application/json','X-Bot-Key':K};var b=JSON.stringify({message:m,org_id:O});fetch(U,{method:'POST',headers:h,body:b}).then(function(r){var rd=r.body.getReader();var d=new TextDecoder();function n(){rd.read().then(function(x){if(x.done){cb(null,true);return;}var t=d.decode(x.value);t.split('\n\n').forEach(function(l){if(l.indexOf('data: ')==0){cb(l.slice(6),false);}});n();});}n();});}"
-                + "var c=document.getElementById('bot-inline');var a=document.createElement('div');a.style.whiteSpace='pre-wrap';var i=document.createElement('input');i.type='text';i.placeholder='Ask a question';i.style.width='100%';var go=document.createElement('button');go.textContent='Send';c.appendChild(a);c.appendChild(i);c.appendChild(go);go.onclick=function(){a.textContent='';var q=i.value;i.value='';s(q,function(tok,end){if(end){return;}a.textContent+=tok;});};"
+                + "var c=document.getElementById('bot-inline');var a=document.createElement('div');a.style.whiteSpace='pre-wrap';var i=document.createElement('input');i.type='text';i.placeholder='Ask a question';i.style.width='100%';var go=document.createElement('button');go.textContent='Send';var W0=(window.chatbotConfig&&(window.chatbotConfig.welcome||window.chatbotConfig.greeting))||'';if(W0){a.textContent=W0;}var shownWelcome=!!W0;c.appendChild(a);c.appendChild(i);c.appendChild(go);go.onclick=function(){var q=i.value;if(!q.trim()){return;}i.value='';var m0=q.toLowerCase();var isG=(m0==='hi'||m0==='hello'||m0==='hey'||m0==='hola'||m0==='hii'||m0.startsWith('hi ')||m0.startsWith('hello ')||m0.startsWith('hey '));var W1=(window.chatbotConfig&&(window.chatbotConfig.welcome||window.chatbotConfig.greeting))||'';if(isG && W1){if(!shownWelcome){a.textContent=W1;shownWelcome=true;}return;}a.textContent='';s(q,function(tok,end){if(end){return;}a.textContent+=tok;});};"
                 + "})();"
                 + "</script>"
             )
@@ -848,8 +849,9 @@ def get_embed_snippet(bot_id: str, org_id: str, widget: str = "bubble", authoriz
                 "  var inr=document.createElement('div');inr.style.display='flex';inr.style.gap='8px';inr.style.padding='10px';inr.style.borderTop='1px solid '+(T==='dark'?'#111827':'#e5e7eb');var input=document.createElement('input');input.type='text';input.placeholder='Ask a question';input.style.flex='1';input.style.padding='10px';input.style.border='1px solid '+(T==='dark'?'#111827':'#e5e7eb');input.style.borderRadius='10px';var sendBtn=document.createElement('button');sendBtn.textContent='Send';sendBtn.style.padding='10px 12px';sendBtn.style.borderRadius='10px';sendBtn.style.border='none';sendBtn.style.background='#2563eb';sendBtn.style.color='#fff';inr.appendChild(input);inr.appendChild(sendBtn);\n"
                 "  p.appendChild(hd);p.appendChild(body);p.appendChild(inr);\n"
                 "  document.body.appendChild(w);document.body.appendChild(b);document.body.appendChild(p);\n"
-                "  function open(){p.style.display='block';requestAnimationFrame(function(){p.style.opacity='1';p.style.transform='translateY(0) scale(1)';});}function close(){p.style.opacity='0';p.style.transform='translateY(6px) scale(0.98)';setTimeout(function(){p.style.display='none';},160);}b.onclick=function(){if(p.style.display==='none'){open();}else{close();}};\n"
-                "  function doSend(){var m=input.value.trim();if(!m){return;}input.value='';var me=add(body,'me',m);var bot=add(body,'bot','');var acc='';try{setButtonTyping(true);}catch(_){ }send(m,function(tok,end){if(end){try{setButtonTyping(false);}catch(_){ }return;}acc+=tok;bot.innerHTML=md(acc);});}\n"
+                "  var shownWelcome=false;\n"
+                "  function open(){p.style.display='block';requestAnimationFrame(function(){p.style.opacity='1';p.style.transform='translateY(0) scale(1)';});if(body.childNodes.length===0 && W){add(body,'bot',W);shownWelcome=true;}}function close(){p.style.opacity='0';p.style.transform='translateY(6px) scale(0.98)';setTimeout(function(){p.style.display='none';},160);}b.onclick=function(){if(p.style.display==='none'){open();}else{close();}};\n"
+                "  function doSend(){var m=input.value.trim();if(!m){return;}var m0=m.toLowerCase();var isG=(m0==='hi'||m0==='hello'||m0==='hey'||m0==='hola'||m0==='hii'||m0.startsWith('hi ')||m0.startsWith('hello ')||m0.startsWith('hey '));if(isG && W){input.value='';add(body,'me',m);if(!shownWelcome){add(body,'bot',W);shownWelcome=true;}return;}input.value='';var me=add(body,'me',m);var bot=add(body,'bot','');var acc='';try{setButtonTyping(true);}catch(_){ }send(m,function(tok,end){if(end){try{setButtonTyping(false);}catch(_){ }return;}acc+=tok;bot.innerHTML=md(acc);});}\n"
                 "  sendBtn.onclick=doSend;input.onkeydown=function(e){if((e.key||e.keyCode)==='Enter'||e.keyCode===13){e.preventDefault();doSend();}}\n"
                 "}\n"
                 "ui();\n"
@@ -876,10 +878,11 @@ def widget_js():
         "  var A=C.apiBase||'"+base+"';"
         "  var K=C.botKey||null;"
         "  var T='"+theme+"';"
-        "  var W=C.welcome||'';"
+        "  var W=(C.welcome||C.greeting||'');"
         "  var N=C.botName||'Chatbot';"
         "  var I=C.icon||'';"
         "  var POS=C.position||'right';"
+        "  var AUTO=C.autoOpen||false;"
         "  var BN='CodeWeft';"
         "  var BL='https://github.com/CodeWeft-Technologies';\n"
         "  if(!O){console.warn('Chatbot: OrgId missing');return;}\n"
@@ -988,6 +991,9 @@ def widget_js():
         "  var input = panel.querySelector('input');\n"
         "  var sendBtn = panel.querySelector('.cb-send');\n"
         "  var closeBtn = panel.querySelector('.cb-close');\n"
+        "  var shownWelcome=false;\n"
+        "  var opened=false;\n"
+        "  function getW(){ var C=window.chatbotConfig||{}; return (C.welcome||C.greeting||''); }\n"
 
         "  // --- Logic ---\n"
         "  function alignPanel(){\n"
@@ -1007,7 +1013,8 @@ def widget_js():
         "    alignPanel();\n"
         "    panel.style.display='flex';\n"
         "    requestAnimationFrame(function(){ panel.style.opacity='1'; panel.style.transform='translateY(0) scale(1)'; });\n"
-        "    if(body.childNodes.length===0 && W) addMsg('bot', W);\n"
+        "    var W0=getW(); if(body.childNodes.length===0 && W0){ addMsg('bot', W0); shownWelcome=true; }\n"
+        "    opened=true;\n"
         "    input.focus();\n"
         "  }\n"
         "  function close(){\n"
@@ -1051,6 +1058,9 @@ def widget_js():
         "  function doSend(){\n"
         "     if(busy) return;\n"
         "     var txt = input.value.trim(); if(!txt) return;\n"
+        "     var m0 = txt.toLowerCase();\n"
+        "     var isGreet = (m0==='hi'||m0==='hello'||m0==='hey'||m0==='hola'||m0==='hii'||m0.startsWith('hi ')||m0.startsWith('hello ')||m0.startsWith('hey '));\n"
+        "     var W0=getW(); if(isGreet && W0){ input.value=''; addMsg('me', txt); if(!shownWelcome){ addMsg('bot', W0); shownWelcome=true; } input.focus(); return; }\n"
         "     busy = true; input.value=''; input.disabled=true; sendBtn.disabled=true;\n"
         "     addMsg('me', txt);\n"
         "     var botRow = document.createElement('div'); botRow.className='row';\n"
@@ -1078,17 +1088,19 @@ def widget_js():
 
         "  function isUuid(s){return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);}\n"
         "  function init(){\n"
-        "    if(!B||!isUuid(B)){\n"
-        "      fetch(A+'/api/bots?org_id='+encodeURIComponent(O))\n"
-        "      .then(r=>r.json()).then(d=>{\n"
-        "         if(d.bots && d.bots.length > 0) {\n"
-        "             B=d.bots[0].bot_id;\n"
-        "             if(!W && d.bots[0].welcome_message) W=d.bots[0].welcome_message;\n"
-        "         }\n"
-        "      }).catch(e=>{});\n"
-        "    }\n"
+        "    fetch(A+'/api/bots?org_id='+encodeURIComponent(O))\n"
+        "    .then(r=>r.json()).then(d=>{\n"
+        "       if(d.bots && d.bots.length > 0) {\n"
+        "           var found=null;\n"
+        "           if(B && isUuid(B)){ found = d.bots.find(function(x){return x.bot_id===B;}) || d.bots[0]; } else { B=d.bots[0].bot_id; found=d.bots[0]; }\n"
+        "           var C=window.chatbotConfig||{};\n"
+        "           if(!(C.welcome||C.greeting) && found.welcome_message){ window.chatbotConfig=Object.assign({},C,{welcome:found.welcome_message}); }\n"
+        "           if(AUTO && !opened){ setTimeout(function(){ open(); }, 10); }\n"
+        "        }\n"
+        "    }).catch(e=>{});\n"
         "  }\n"
         "  init();\n"
+        "  if(AUTO){ setTimeout(function(){ open(); }, 100); }\n"
         "})();"
     )
     return js
