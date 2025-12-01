@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Header, File, UploadFile, Form
 from typing import Optional
 from pydantic import BaseModel
 from typing import List
-from app.rag import chunk_text, embed_text, store_embedding
+from app.services.enhanced_rag import chunk_text, embed_text, store_embedding
 from app.config import settings
 
 
@@ -57,11 +57,15 @@ def ingest(bot_id: str, body: IngestBody, x_bot_key: Optional[str] = Header(defa
     _rate_limit(bot_id, body.org_id)
     chunks: List[str] = chunk_text(body.content)
     inserted = 0
+    skipped = 0
     for c in chunks:
         emb = embed_text(c)
-        store_embedding(body.org_id, bot_id, c, emb, metadata=None)
-        inserted += 1
-    return {"inserted": inserted}
+        stored = store_embedding(body.org_id, bot_id, c, emb, metadata=None)
+        if stored:
+            inserted += 1
+        else:
+            skipped += 1
+    return {"inserted": inserted, "skipped_duplicates": skipped}
 
 
 @router.get("/analytics/{org_id}/{bot_id}")
@@ -135,144 +139,53 @@ def ingest_url(bot_id: str, body: UrlBody, x_bot_key: Optional[str] = Header(def
     finally:
         conn.close()
 
-    import requests
-    from bs4 import BeautifulSoup
-
-    url = (body.url or "").strip()
-    if not url:
-        raise HTTPException(status_code=400, detail="url is required")
-    if not (url.lower().startswith("http://") or url.lower().startswith("https://")):
-        url = "https://" + url
+    # Use enhanced scraper with Playwright and Readability (enabled by default)
+    from app.services.enhanced_scraper import scrape_url
+    from app.services.enhanced_rag import chunk_text, embed_text, store_embedding, remove_boilerplate
+    
     try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
-            "Accept-Language": "en-IN,en;q=0.9",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        }
-        r = requests.get(url, timeout=20, headers=headers)
+        scraped = scrape_url(body.url, use_playwright=True, timeout=30)
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"fetch failed: {str(e)}")
-    r.raise_for_status()
-    soup = BeautifulSoup(r.text, "html.parser")
-    used_url = r.url
-    try:
-        amp = soup.find("link", attrs={"rel":"amphtml"})
-        amp_href = amp.get("href") if amp else None
-        if amp_href:
-            try:
-                r2 = requests.get(amp_href, timeout=20, headers=headers)
-                r2.raise_for_status()
-                soup = BeautifulSoup(r2.text, "html.parser")
-                used_url = r2.url
-            except Exception:
-                pass
-    except Exception:
-        pass
-    try:
-        for t in soup.find_all(["script","style","noscript","template"]):
-            t.decompose()
-    except Exception:
-        pass
-    try:
-        for t in soup.find_all(["nav","footer","header","aside"]):
-            t.decompose()
-    except Exception:
-        pass
-    title = None
-    try:
-        title = (soup.title.string or "").strip() if soup.title else None
-    except Exception:
-        title = None
-    desc = None
-    try:
-        md = soup.find("meta", attrs={"name":"description"})
-        desc = (md.get("content") or "").strip() if md else None
-    except Exception:
-        desc = None
-    candidates = []
-    try:
-        for sel in [
-            lambda s: s.find("article"),
-            lambda s: s.find(attrs={"role":"main"}),
-            lambda s: s.find(id="main"),
-            lambda s: s.find(id="content"),
-            lambda s: s.find(class_="article"),
-            lambda s: s.find(class_="post"),
-            lambda s: s.find(class_="content"),
-            lambda s: s.find(class_="entry-content"),
-        ]:
-            try:
-                el = sel(soup)
-                if el:
-                    candidates.append(el.get_text("\n"))
-            except Exception:
-                pass
-    except Exception:
-        candidates = []
-    body_text = ""
-    try:
-        from urllib.parse import urlparse
-        host = urlparse(used_url).netloc.lower()
-    except Exception:
-        host = ""
-    try:
-        if host.find("msn.com") != -1:
-            main = None
-            for sel in [
-                lambda s: s.find("article"),
-                lambda s: s.find(attrs={"itemprop":"articleBody"}),
-                lambda s: s.find("section", attrs={"itemprop":"articleBody"}),
-                lambda s: s.find("div", attrs={"itemprop":"articleBody"}),
-                lambda s: s.find("div", class_=lambda c: c and ("article" in c or "entry" in c or "content" in c or "story" in c)),
-            ]:
-                try:
-                    el = sel(soup)
-                    if el:
-                        main = el
-                        break
-                except Exception:
-                    pass
-            if main:
-                ps = [p.get_text(" ") for p in main.find_all("p")]
-                body_text = "\n".join(ps) or ""
-        if not body_text and candidates:
-            body_text = max(candidates, key=lambda x: len(x or "")) or ""
-        else:
-            ps = [p.get_text(" ") for p in soup.find_all("p")]
-            body_text = "\n".join(ps)
-    except Exception:
-        body_text = soup.get_text("\n")
-    def _clean(s: str) -> str:
-        try:
-            lines = [l.strip() for l in (s or "").splitlines()]
-            lines = [l for l in lines if l]
-            return "\n".join(lines)
-        except Exception:
-            return s or ""
-    text_parts = []
-    if title:
-        text_parts.append(title)
-    if desc:
-        text_parts.append(desc)
-    text_parts.append(_clean(body_text))
-    text = "\n\n".join([t for t in text_parts if t])
-    chunks: List[str] = chunk_text(text)
+        raise HTTPException(status_code=400, detail=f"Scraping failed: {str(e)}")
+    
+    # Remove boilerplate patterns
+    cleaned_content = remove_boilerplate(scraped.content)
+    
+    # Chunk with semantic boundaries
+    chunks: List[str] = chunk_text(cleaned_content)
+    
     inserted = 0
+    skipped = 0
+    
     for c in chunks:
         emb = embed_text(c)
-        meta = {"source_url": used_url}
-        if title:
-            meta["page_title"] = title
-        try:
-            canon = soup.find("link", attrs={"rel":"canonical"})
-            ch = canon.get("href") if canon else None
-            if ch:
-                meta["canonical_url"] = ch
-        except Exception:
-            pass
-        store_embedding(body.org_id, bot_id, c, emb, metadata=meta)
-        inserted += 1
-    return {"inserted": inserted}
+        
+        # Build metadata
+        meta = {
+            "source_url": scraped.final_url,
+        }
+        if scraped.title:
+            meta["page_title"] = scraped.title
+        if scraped.description:
+            meta["description"] = scraped.description
+        if scraped.canonical_url:
+            meta["canonical_url"] = scraped.canonical_url
+        if scraped.language:
+            meta["language"] = scraped.language
+        
+        # Store with automatic deduplication
+        stored = store_embedding(body.org_id, bot_id, c, emb, metadata=meta)
+        if stored:
+            inserted += 1
+        else:
+            skipped += 1
+    
+    return {
+        "inserted": inserted,
+        "skipped_duplicates": skipped,
+        "total_chunks": len(chunks),
+        "language": scraped.language,
+    }
 
 
 @router.post("/ingest/pdf/{bot_id}")
@@ -318,11 +231,15 @@ async def ingest_pdf(
     text = "\n".join(pages)
     chunks: List[str] = chunk_text(text)
     inserted = 0
+    skipped = 0
     for c in chunks:
         emb = embed_text(c)
-        store_embedding(org_id, bot_id, c, emb, metadata={"source_file": file.filename})
-        inserted += 1
-    return {"inserted": inserted}
+        stored = store_embedding(org_id, bot_id, c, emb, metadata={"source_file": file.filename})
+        if stored:
+            inserted += 1
+        else:
+            skipped += 1
+    return {"inserted": inserted, "skipped_duplicates": skipped}
 
 @router.options("/ingest/pdf/{bot_id}")
 async def ingest_pdf_options(bot_id: str):

@@ -18,3 +18,10 @@ requests==2.32.3
 beautifulsoup4==4.12.3
 pypdf==5.1.0
 python-multipart==0.0.9
+
+# Advanced web scraping
+playwright==1.47.0
+readability-lxml==0.8.1
+lxml_html_clean==0.4.3
+langdetect==1.0.9
+nltk==3.9.1

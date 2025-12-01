@@ -1,4 +1,15 @@
+import sys
+import asyncio
 from fastapi import FastAPI
+
+# On Windows, ensure the ProactorEventLoop is used so asyncio.create_subprocess_exec
+# (required by Playwright) is available. Do this early, before any asyncio usage.
+if sys.platform == "win32":
+    try:
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    except Exception:
+        # If setting the policy fails, continue — code will fallback to requests
+        pass
 import psycopg
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
