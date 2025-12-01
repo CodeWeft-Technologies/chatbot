@@ -146,24 +146,6 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
             if not x_bot_key or x_bot_key != public_api_key:
                 raise HTTPException(status_code=403, detail="Invalid bot key")
         _rate_limit(bot_id, body.org_id)
-        msg0 = body.message.strip().lower()
-        if msg0 in {"hi", "hello", "hey", "hola", "hii"} or msg0.startswith("hi ") or msg0.startswith("hello ") or msg0.startswith("hey "):
-            wm = None
-            try:
-                with conn.cursor() as cur:
-                    import uuid as _u
-                    nu2 = str(_u.uuid5(_u.NAMESPACE_URL, body.org_id))
-                    cur.execute(
-                        "select welcome_message from chatbots where id=%s and org_id::text in (%s,%s,%s)",
-                        (bot_id, normalize_org_id(body.org_id), body.org_id, nu2),
-                    )
-                    rwm = cur.fetchone()
-                    wm = rwm[0] if rwm else None
-            except Exception:
-                wm = None
-            _ensure_usage_table(conn)
-            _log_chat_usage(conn, body.org_id, bot_id, 0.0, False)
-            return {"answer": wm or "Hello! How can I help you?", "citations": [], "similarity": 0.0}
         chunks = search_top_chunks(body.org_id, bot_id, body.message, settings.MAX_CONTEXT_CHUNKS)
         if not chunks:
             msg = body.message.strip().lower()
@@ -352,26 +334,6 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
             if not x_bot_key or x_bot_key != public_api_key:
                 raise HTTPException(status_code=403, detail="Invalid bot key")
         _rate_limit(bot_id, body.org_id)
-        msg0 = body.message.strip().lower()
-        if msg0 in {"hi", "hello", "hey", "hola", "hii"} or msg0.startswith("hi ") or msg0.startswith("hello ") or msg0.startswith("hey "):
-            wm = None
-            try:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "select welcome_message from chatbots where id=%s",
-                        (bot_id,),
-                    )
-                    rwm = cur.fetchone()
-                    wm = rwm[0] if rwm else None
-            except Exception:
-                wm = None
-            def gen_hi():
-                text = wm or "Hello! How can I help you?"
-                yield f"data: {text}\n\n"
-                yield "event: end\n\n"
-            _ensure_usage_table(conn)
-            _log_chat_usage(conn, body.org_id, bot_id, 0.0, False)
-            return StreamingResponse(gen_hi(), media_type="text/event-stream")
         chunks = search_top_chunks(body.org_id, bot_id, body.message, settings.MAX_CONTEXT_CHUNKS)
         if not chunks:
             msg = body.message.strip().lower()
