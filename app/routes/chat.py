@@ -1830,6 +1830,7 @@ class CreateAppointmentBody(BaseModel):
 
 @router.post("/bots/{bot_id}/booking/appointment")
 def booking_create(bot_id: str, body: CreateAppointmentBody, authorization: Optional[str] = Header(default=None), x_bot_key: Optional[str] = Header(default=None)):
+    import traceback
     conn = get_conn()
     try:
         _ensure_booking_settings_table(conn)
@@ -1956,6 +1957,13 @@ def booking_create(bot_id: str, body: CreateAppointmentBody, authorization: Opti
         if body.email:
             _enqueue_notification(conn, body.org_id, bot_id, apid, "confirmation", body.email, {"appointment_id": apid})
         return {"appointment_id": apid, "external_event_id": ext_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        import logging
+        logging.error(f"Booking appointment error: {str(e)}")
+        logging.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Booking failed: {str(e)}")
     finally:
         conn.close()
 
