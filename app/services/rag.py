@@ -4,9 +4,12 @@ from app.services.embeddings import embed_text
 
 def build_prompt(context_chunks: list[tuple], user_query: str, bot_behavior: str, system_prompt: str | None):
     ctx = "\n\n".join([c[0] for c in context_chunks])
-    system = system_prompt or (
-        f"You are a {bot_behavior} assistant. Use only the provided context. If the answer is not in context, say: \"I don't have that information.\""
-    )
+    if system_prompt:
+        system = system_prompt + " Keep responses short and informative."
+    else:
+        system = (
+            f"You are a {bot_behavior} assistant. Use only the provided context. If the answer is not in context, say: \"I don't have that information.\" Keep responses short and informative."
+        )
     user = f"Context:\n{ctx}\n\nQuestion:\n{user_query}"
     return system, user
 
