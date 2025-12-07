@@ -1838,12 +1838,17 @@ def booking_create(bot_id: str, body: CreateAppointmentBody, authorization: Opti
         _ensure_audit_logs_table(conn)
         _ensure_notifications_table(conn)
         behavior, system_prompt, public_api_key = get_bot_meta(conn, bot_id, body.org_id)
+        # Allow public booking if bot key matches or if authorization is provided
         if public_api_key:
-            if not x_bot_key or x_bot_key != public_api_key:
-                if authorization:
-                    _require_auth(authorization, body.org_id)
-                else:
-                    raise HTTPException(status_code=403, detail="Invalid bot key")
+            if x_bot_key and x_bot_key == public_api_key:
+                pass  # Valid bot key - allow booking
+            elif authorization:
+                _require_auth(authorization, body.org_id)
+            else:
+                raise HTTPException(status_code=403, detail="Invalid bot key")
+        else:
+            # No public key set - require authorization
+            _require_auth(authorization, body.org_id)
         with conn.cursor() as cur:
             cur.execute(
                 "select calendar_id, access_token_enc, refresh_token_enc, token_expiry from bot_calendar_oauth where (org_id=%s or org_id::text=%s) and bot_id=%s and provider=%s",
