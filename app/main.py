@@ -127,6 +127,61 @@ def _init_schema():
                     )
                     """
                 )
+                cur.execute(
+                    """
+                    create table if not exists bot_calendar_oauth (
+                      org_id text not null,
+                      bot_id text not null,
+                      provider text not null,
+                      access_token_enc text,
+                      refresh_token_enc text,
+                      token_expiry timestamptz,
+                      calendar_id text,
+                      watch_channel_id text,
+                      watch_resource_id text,
+                      watch_expiration timestamptz,
+                      created_at timestamptz default now(),
+                      updated_at timestamptz default now(),
+                      primary key (org_id, bot_id, provider)
+                    )
+                    """
+                )
+                cur.execute(
+                    """
+                    create table if not exists bot_booking_settings (
+                      org_id text not null,
+                      bot_id text not null,
+                      timezone text,
+                      available_windows jsonb,
+                      slot_duration_minutes int default 30,
+                      capacity_per_slot int default 1,
+                      min_notice_minutes int default 60,
+                      max_future_days int default 60,
+                      suggest_strategy text default 'next_best',
+                      created_at timestamptz default now(),
+                      updated_at timestamptz default now(),
+                      primary key (org_id, bot_id)
+                    )
+                    """
+                )
+                cur.execute(
+                    """
+                    create table if not exists bot_appointments (
+                      id bigserial primary key,
+                      org_id text not null,
+                      bot_id text not null,
+                      summary text,
+                      start_iso text,
+                      end_iso text,
+                      attendees_json jsonb,
+                      external_event_id text,
+                      status text default 'scheduled',
+                      user_contact text,
+                      created_at timestamptz default now(),
+                      updated_at timestamptz default now()
+                    )
+                    """
+                )
                 try:
                     cur.execute("alter table bot_usage_daily enable row level security;")
                     cur.execute("alter table bot_usage_daily force row level security;")
@@ -140,6 +195,21 @@ def _init_schema():
                 try:
                     cur.execute("alter table bot_calendar_settings enable row level security;")
                     cur.execute("alter table bot_calendar_settings force row level security;")
+                except Exception:
+                    pass
+                try:
+                    cur.execute("alter table bot_calendar_oauth enable row level security;")
+                    cur.execute("alter table bot_calendar_oauth force row level security;")
+                except Exception:
+                    pass
+                try:
+                    cur.execute("alter table bot_booking_settings enable row level security;")
+                    cur.execute("alter table bot_booking_settings force row level security;")
+                except Exception:
+                    pass
+                try:
+                    cur.execute("alter table bot_appointments enable row level security;")
+                    cur.execute("alter table bot_appointments force row level security;")
                 except Exception:
                     pass
     except Exception:
