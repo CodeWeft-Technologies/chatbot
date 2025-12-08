@@ -213,6 +213,46 @@ def _init_schema():
                 except Exception:
                     pass
                 
+                # Create conversation history table for session-based context
+                cur.execute(
+                    """
+                    create table if not exists conversation_history (
+                      id bigserial primary key,
+                      session_id text not null,
+                      org_id text not null,
+                      bot_id text not null,
+                      role text not null,
+                      content text not null,
+                      created_at timestamptz default now()
+                    )
+                    """
+                )
+                
+                # Create index for fast session lookups
+                try:
+                    cur.execute(
+                        "create index if not exists idx_conversation_session on conversation_history(session_id, created_at)"
+                    )
+                except Exception:
+                    pass
+                
+                # Enable RLS on conversation_history
+                try:
+                    cur.execute("alter table conversation_history enable row level security;")
+                    cur.execute("alter table conversation_history force row level security;")
+                except Exception:
+                    pass
+                
+                # Allow service role full access to conversation history
+                try:
+                    cur.execute("drop policy if exists service_role_all_conversation on conversation_history;")
+                    cur.execute("""
+                        create policy service_role_all_conversation on conversation_history
+                        for all using (true);
+                    """)
+                except Exception:
+                    pass
+                
                 # Create booking audit logs table
                 cur.execute(
                     """
@@ -285,3 +325,21 @@ def _init_schema():
 @app.on_event("startup")
 def on_startup():
     _init_schema()
+    # Schedule periodic cleanup of old conversations
+    import threading
+    def cleanup_conversations():
+        import time
+        while True:
+            try:
+                time.sleep(3600)  # Run every hour
+                conn = psycopg.connect(settings.SUPABASE_DB_DSN, autocommit=True)
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute("delete from conversation_history where created_at < now() - interval '24 hours'")
+                finally:
+                    conn.close()
+            except Exception:
+                pass
+    
+    thread = threading.Thread(target=cleanup_conversations, daemon=True)
+    thread.start()
