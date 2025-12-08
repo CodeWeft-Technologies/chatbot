@@ -18,6 +18,7 @@ import base64, json, hmac, hashlib, uuid, datetime
 class ChatBody(BaseModel):
     message: str
     org_id: str
+    session_id: Optional[str] = None
 
 class KeyBody(BaseModel):
     org_id: str
@@ -74,6 +75,54 @@ def get_bot_meta(conn, bot_id: str, org_id: str):
 
 _RATE_BUCKETS = defaultdict(deque)
 _SESSION_STATE = defaultdict(dict)
+
+
+def _get_conversation_history(conn, session_id: str, org_id: str, bot_id: str, max_messages: int = 10):
+    """Retrieve conversation history for a session (last 24 hours)"""
+    if not session_id:
+        return []
+    
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select role, content from conversation_history 
+            where session_id=%s and org_id=%s and bot_id=%s 
+            and created_at > now() - interval '24 hours'
+            order by created_at desc
+            limit %s
+            """,
+            (session_id, normalize_org_id(org_id), bot_id, max_messages)
+        )
+        rows = cur.fetchall()
+    
+    # Reverse to get chronological order
+    return [{"role": row[0], "content": row[1]} for row in reversed(rows)]
+
+
+def _save_conversation_message(conn, session_id: str, org_id: str, bot_id: str, role: str, content: str):
+    """Save a message to conversation history"""
+    if not session_id:
+        return
+    
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            insert into conversation_history (session_id, org_id, bot_id, role, content)
+            values (%s, %s, %s, %s, %s)
+            """,
+            (session_id, normalize_org_id(org_id), bot_id, role, content)
+        )
+
+
+def _cleanup_old_conversations(conn):
+    """Delete conversations older than 24 hours"""
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "delete from conversation_history where created_at < now() - interval '24 hours'"
+            )
+    except Exception:
+        pass
 
 
 def _rate_limit(bot_id: str, org_id: str, limit: int = 30, window_seconds: int = 60):
@@ -580,22 +629,39 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
             if is_greet:
                 _ensure_usage_table(conn)
                 _log_chat_usage(conn, body.org_id, bot_id, 0.0, False)
-                return {"answer": (wm or "Hello! How can I help you?"), "citations": [], "similarity": 0.0}
+                welcome_msg = (wm or "Hello! How can I help you?")
+                # Save greeting exchange to conversation history
+                if body.session_id:
+                    _save_conversation_message(conn, body.session_id, body.org_id, bot_id, "user", body.message)
+                    _save_conversation_message(conn, body.session_id, body.org_id, bot_id, "assistant", welcome_msg)
+                return {"answer": welcome_msg, "citations": [], "similarity": 0.0}
+            
+            # Get conversation history for context
+            history = _get_conversation_history(conn, body.session_id, body.org_id, bot_id, max_messages=10)
+            
             try:
                 sysmsg = (
                     f"You are a {beh or 'helpful'} assistant. "
                     + (sys or "Answer with general knowledge when needed.")
                     + " Keep responses short and informative."
                 )
+                
+                # Build messages with conversation history
+                messages = [{"role": "system", "content": sysmsg}]
+                messages.extend(history)  # Add conversation history
+                messages.append({"role": "user", "content": body.message})
+                
                 resp = client.chat.completions.create(
                     model="llama-3.3-70b-versatile",
                     temperature=0.5,
-                    messages=[
-                        {"role": "system", "content": sysmsg},
-                        {"role": "user", "content": body.message},
-                    ],
+                    messages=messages,
                 )
                 answer = resp.choices[0].message.content
+                
+                # Save to conversation history
+                if body.session_id:
+                    _save_conversation_message(conn, body.session_id, body.org_id, bot_id, "user", body.message)
+                    _save_conversation_message(conn, body.session_id, body.org_id, bot_id, "assistant", answer)
             except Exception:
                 answer = "I don't have that information."
             _ensure_usage_table(conn)
@@ -612,17 +678,27 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
             )
         )
         user = f"Context:\n{context}\n\nQuestion:\n{body.message}"
+        
+        # Get conversation history for context
+        history = _get_conversation_history(conn, body.session_id, body.org_id, bot_id, max_messages=8)
 
         try:
+            # Build messages with conversation history
+            messages = [{"role": "system", "content": system}]
+            messages.extend(history)  # Add conversation history
+            messages.append({"role": "user", "content": user})
+            
             resp = client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
                 temperature=0.2,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
+                messages=messages,
             )
             answer = resp.choices[0].message.content
+            
+            # Save to conversation history
+            if body.session_id:
+                _save_conversation_message(conn, body.session_id, body.org_id, bot_id, "user", body.message)
+                _save_conversation_message(conn, body.session_id, body.org_id, bot_id, "assistant", answer)
         except Exception:
             answer = "I don't have that information."
         import math
@@ -1099,6 +1175,17 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
             if is_greet:
                 def gen_hi():
                     text = wm or "Hello! How can I help you?"
+                    # Save greeting exchange to conversation history
+                    if body.session_id:
+                        try:
+                            sconn = get_conn()
+                            try:
+                                _save_conversation_message(sconn, body.session_id, body.org_id, bot_id, "user", body.message)
+                                _save_conversation_message(sconn, body.session_id, body.org_id, bot_id, "assistant", text)
+                            finally:
+                                sconn.close()
+                        except Exception:
+                            pass
                     yield f"data: {text}\n\n"
                     yield "event: end\n\n"
                 _ensure_usage_table(conn)
@@ -1127,16 +1214,22 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
             else f"You are a {behavior} assistant. Use only the provided context. If the answer is not in context, say: \"I don't have that information.\" Keep responses short and informative."
         )
         user = f"Context:\n{context}\n\nQuestion:\n{body.message}"
+        
+        # Get conversation history for context
+        history = _get_conversation_history(conn, body.session_id, body.org_id, bot_id, max_messages=8)
 
         def gen():
+            full_response = ""
             try:
+                # Build messages with conversation history
+                messages = [{"role": "system", "content": system}]
+                messages.extend(history)  # Add conversation history
+                messages.append({"role": "user", "content": user})
+                
                 resp = client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
                 temperature=0.2,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
+                messages=messages,
                 stream=True,
             )
                 for evt in resp:
@@ -1145,8 +1238,22 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
                     except Exception:
                         content = None
                     if content:
+                        full_response += content
                         yield f"data: {content}\n\n"
                 yield "event: end\n\n"
+                
+                # Save to conversation history after streaming completes
+                if body.session_id and full_response:
+                    try:
+                        sconn = get_conn()
+                        try:
+                            _save_conversation_message(sconn, body.session_id, body.org_id, bot_id, "user", body.message)
+                            _save_conversation_message(sconn, body.session_id, body.org_id, bot_id, "assistant", full_response)
+                        finally:
+                            sconn.close()
+                    except Exception:
+                        pass
+                
                 try:
                     cconn = get_conn()
                     try:
@@ -2695,6 +2802,21 @@ def widget_js():
         "  if(!O){console.warn('Chatbot: OrgId missing');return;}\n"
         "  var busy=false;\n"
         "  var SHOW_BADGE=(C.showButtonTyping===undefined)?true:!!C.showButtonTyping;\n"
+        "  // Generate or retrieve session ID from localStorage\n"
+        "  var SESSION_KEY='chatbot_session_'+O+'_'+B;\n"
+        "  var SESSION_ID=(function(){\n"
+        "    try{\n"
+        "      var stored=localStorage.getItem(SESSION_KEY);\n"
+        "      if(stored){\n"
+        "        var parsed=JSON.parse(stored);\n"
+        "        var age=Date.now()-parsed.created;\n"
+        "        if(age<24*60*60*1000)return parsed.id;\n"
+        "      }\n"
+        "    }catch(__){}\n"
+        "    var newId='sess_'+Date.now()+'_'+Math.random().toString(36).substr(2,9);\n"
+        "    try{localStorage.setItem(SESSION_KEY,JSON.stringify({id:newId,created:Date.now()}));}catch(__){}\n"
+        "    return newId;\n"
+        "  })();\n"
 
         "  // --- CSS Injection ---\n"
         "  var __cw_css = `\n"
@@ -2900,7 +3022,7 @@ def widget_js():
         "  function sendApi(m, onchunk){\n"
         "     var h={'Content-Type':'application/json'};\n"
         "     if(K) h['X-Bot-Key']=K;\n"
-        "     var payload=JSON.stringify({message:m, org_id:O});\n"
+        "     var payload=JSON.stringify({message:m, org_id:O, session_id:SESSION_ID});\n"
         "     fetch(A+'/api/chat/stream/'+B, {method:'POST',headers:h,body:payload})\n"
         "     .then(function(r){\n"
         "         var rd=r.body.getReader(); var d=new TextDecoder();\n"
