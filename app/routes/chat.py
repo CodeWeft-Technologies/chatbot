@@ -1878,8 +1878,13 @@ def booking_create(bot_id: str, body: CreateAppointmentBody, authorization: Opti
         if missing:
             raise HTTPException(status_code=400, detail="missing fields: " + ", ".join(missing))
         from app.services.calendar_google import _decrypt, build_service_from_tokens, list_events_oauth, create_event_oauth
+        import logging
+        logging.info(f"Decrypting tokens - at_enc exists: {bool(at_enc)}, rt_enc exists: {bool(rt_enc)}")
         at = _decrypt(at_enc) if at_enc else None
         rt = _decrypt(rt_enc) if rt_enc else None
+        logging.info(f"Decrypted tokens - at exists: {bool(at)}, rt exists: {bool(rt)}")
+        if not at:
+            raise HTTPException(status_code=500, detail="Failed to decrypt access token - calendar may need to be reconnected")
         svc = build_service_from_tokens(at, rt, exp)
         if not svc:
             raise HTTPException(status_code=500, detail="calendar service unavailable")

@@ -212,6 +212,73 @@ def _init_schema():
                     cur.execute("alter table bot_appointments force row level security;")
                 except Exception:
                     pass
+                
+                # Create booking audit logs table
+                cur.execute(
+                    """
+                    create table if not exists booking_audit_logs (
+                      id bigserial primary key,
+                      org_id text not null,
+                      bot_id text not null,
+                      appointment_id bigint,
+                      action text not null,
+                      details jsonb,
+                      created_at timestamptz default now()
+                    )
+                    """
+                )
+                
+                # Create booking notifications table
+                cur.execute(
+                    """
+                    create table if not exists booking_notifications (
+                      id bigserial primary key,
+                      org_id text not null,
+                      bot_id text not null,
+                      appointment_id bigint,
+                      notification_type text not null,
+                      recipient_email text not null,
+                      payload jsonb,
+                      sent_at timestamptz,
+                      status text default 'pending',
+                      created_at timestamptz default now()
+                    )
+                    """
+                )
+                
+                # Enable RLS on booking_audit_logs
+                try:
+                    cur.execute("alter table booking_audit_logs enable row level security;")
+                    cur.execute("alter table booking_audit_logs force row level security;")
+                except Exception:
+                    pass
+                
+                # Enable RLS on booking_notifications
+                try:
+                    cur.execute("alter table booking_notifications enable row level security;")
+                    cur.execute("alter table booking_notifications force row level security;")
+                except Exception:
+                    pass
+                
+                # Create RLS policies for booking_audit_logs (allow service role access)
+                try:
+                    cur.execute("drop policy if exists service_role_all_booking_audit on booking_audit_logs;")
+                    cur.execute("""
+                        create policy service_role_all_booking_audit on booking_audit_logs
+                        for all using (true);
+                    """)
+                except Exception:
+                    pass
+                
+                # Create RLS policies for booking_notifications (allow service role access)
+                try:
+                    cur.execute("drop policy if exists service_role_all_booking_notif on booking_notifications;")
+                    cur.execute("""
+                        create policy service_role_all_booking_notif on booking_notifications
+                        for all using (true);
+                    """)
+                except Exception:
+                    pass
     except Exception:
         pass
 
