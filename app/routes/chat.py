@@ -58,6 +58,359 @@ class CreateBotBody(BaseModel):
 router = APIRouter()
 client = Groq(api_key=settings.GROQ_API_KEY)
 
+# Cache for LLM intent detection results (to reduce API calls)
+_INTENT_CACHE = {}
+_CACHE_MAX_SIZE = 500
+
+def _llm_intent_detection(message: str, history: list = None) -> dict:
+    """
+    LLM-based intent detection for ambiguous cases.
+    Uses Groq's fast LLM to understand implicit booking intent.
+    
+    Returns: {
+        'is_booking': bool,
+        'action': 'book'|'reschedule'|'cancel'|'status'|None,
+        'confidence': float (0.0-1.0),
+        'reasoning': str
+    }
+    """
+    # Check cache first (normalize message for caching)
+    cache_key = message.lower().strip()[:100]  # First 100 chars
+    if cache_key in _INTENT_CACHE:
+        return _INTENT_CACHE[cache_key]
+    
+    # Build context from history
+    context = ""
+    if history:
+        recent = history[-3:] if len(history) > 3 else history
+        context = "\n".join([f"{'User' if h.get('role') == 'user' else 'Bot'}: {h.get('content', '')}" for h in recent])
+    
+    # LLM prompt for intent detection
+    prompt = f"""Analyze if this message is related to booking/scheduling an appointment.
+
+Previous conversation:
+{context if context else "(No previous messages)"}
+
+Current message: "{message}"
+
+Respond ONLY with a JSON object (no markdown, no explanation):
+{{
+  "is_booking": true/false,
+  "action": "book"|"reschedule"|"cancel"|"status"|null,
+  "confidence": 0.0-1.0,
+  "reasoning": "brief explanation"
+}}
+
+Examples:
+- "I need to see the doctor" → {{"is_booking": true, "action": "book", "confidence": 0.9}}
+- "Can I come tomorrow?" → {{"is_booking": true, "action": "book", "confidence": 0.85}}
+- "मैं कल आऊंगा" (I'll come tomorrow) → {{"is_booking": true, "action": "book", "confidence": 0.9}}
+- "What are your services?" → {{"is_booking": false, "action": null, "confidence": 0.9}}
+- "I booked a hotel" → {{"is_booking": false, "action": null, "confidence": 0.85}}"""
+
+    try:
+        response = client.chat.completions.create(
+            model="llama-3.1-8b-instant",  # Fast and cheap
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,  # Low temperature for consistent results
+            max_tokens=150
+        )
+        
+        result_text = response.choices[0].message.content.strip()
+        
+        # Parse JSON response
+        # Remove markdown code blocks if present
+        if result_text.startswith("```"):
+            result_text = result_text.split("```")[1]
+            if result_text.startswith("json"):
+                result_text = result_text[4:]
+        
+        result = json.loads(result_text)
+        
+        # Cache the result
+        if len(_INTENT_CACHE) >= _CACHE_MAX_SIZE:
+            # Remove oldest entry
+            _INTENT_CACHE.pop(next(iter(_INTENT_CACHE)))
+        _INTENT_CACHE[cache_key] = result
+        
+        return result
+    except Exception as e:
+        # Fallback on error
+        return {
+            'is_booking': False,
+            'action': None,
+            'confidence': 0.0,
+            'reasoning': f'LLM error: {str(e)}'
+        }
+
+
+def _detect_booking_intent(message: str, history: list = None) -> dict:
+    """
+    Smart multi-language booking intent detection.
+    Supports: English, Hindi, Tamil, Telugu, Kannada, Malayalam, Bengali, Marathi, Gujarati, Punjabi, Urdu
+    
+    Returns: {
+        'is_booking': bool,
+        'action': 'book'|'reschedule'|'cancel'|'status'|None,
+        'has_time': bool,
+        'has_appointment_id': bool
+    }
+    """
+    import re
+    msg_lower = message.lower()
+    
+    # Booking keywords (English + Indian languages)
+    booking_keywords = [
+        # English
+        r'\b(book|schedule|appointment|reserve|slot|meeting)\b',
+        # Hindi (Devanagari + transliteration)
+        r'\b(बुक|अपॉइंटमेंट|समय|मिलना|बुकिंग|book|appointment|samay)\b',
+        # Tamil
+        r'\b(பதிவு|நேரம்|சந்திப்பு|புக்|appointment)\b',
+        # Telugu
+        r'\b(బుకింగ్|అపాయింట్మెంట్|సమయం|రిజర్వేషన్)\b',
+        # Kannada
+        r'\b(ಬುಕಿಂಗ್|ಅಪಾಯಿಂಟ್ಮೆಂಟ್|ಸಮಯ|ಕಾಲಾವಕಾಶ)\b',
+        # Malayalam
+        r'\b(ബുക്കിംഗ്|അപ്പോയിന്റ്മെന്റ്|സമയം)\b',
+        # Bengali
+        r'\b(বুকিং|অ্যাপয়েন্টমেন্ট|সময়|দেখা)\b',
+        # Marathi
+        r'\b(बुकिंग|भेट|वेळ|नियुक्ती)\b',
+        # Gujarati
+        r'\b(બુકિંગ|મુલાકાત|સમય|અપોઇન્ટમેન્ટ)\b',
+        # Punjabi
+        r'\b(ਬੁਕਿੰਗ|ਮੁਲਾਕਾਤ|ਸਮਾਂ|ਅਪਾਇੰਟਮੈਂਟ)\b',
+        # Urdu
+        r'\b(بکنگ|ملاقات|وقت|اپائنٹمنٹ)\b',
+        # Common transliterations
+        r'\b(apointment|apoyntment|milna|dekhna|samay|waqt)\b'
+    ]
+    
+    # Cancellation keywords
+    cancel_keywords = [
+        r'\b(cancel|cancellation|delete|remove)\b',
+        r'\b(रद्द|कैंसल|cancel|hatana)\b',
+        r'\b(ரத்து|நீக்கு)\b',
+        r'\b(రద్దు|తొలగించు)\b',
+        r'\b(ರದ್ದು|ತೆಗೆದುಹಾಕು)\b',
+        r'\b(റദ്ദാക്കുക|നീക്കം)\b',
+        r'\b(বাতিল|সরান)\b',
+        r'\b(रद्द|काढून)\b',
+        r'\b(રદ|દૂર)\b',
+        r'\b(ਰੱਦ|ਹਟਾਓ)\b',
+        r'\b(منسوخ|ہٹانا)\b'
+    ]
+    
+    # Reschedule keywords
+    reschedule_keywords = [
+        r'\b(reschedule|change|modify|shift|move)\b',
+        r'\b(बदल|परिवर्तन|पुनर्निर्धारण|change)\b',
+        r'\b(மாற்று|மாற்றம்)\b',
+        r'\b(మార్చు|మార్పు)\b',
+        r'\b(ಬದಲಾಯಿಸಿ|ಬದಲಾವಣೆ)\b',
+        r'\b(മാറ്റുക|മാറ്റം)\b',
+        r'\b(পরিবর্তন|বদল)\b',
+        r'\b(बदल|फेरबदल)\b',
+        r'\b(બદલો|ફેરફાર)\b',
+        r'\b(ਬਦਲੋ|ਤਬਦੀਲੀ)\b',
+        r'\b(تبدیل|بدلنا)\b'
+    ]
+    
+    # Status/check keywords
+    status_keywords = [
+        r'\b(status|check|view|show|my\s+appointment)\b',
+        r'\b(स्थिति|देखो|मेरा|check|status)\b',
+        r'\b(நிலை|பார்|என்|appointment)\b',
+        r'\b(స్థితి|చూడు|నా)\b',
+        r'\b(ಸ್ಥಿತಿ|ನೋಡಿ|ನನ್ನ)\b',
+        r'\b(സ്ഥിതി|കാണുക|എന്റെ)\b',
+        r'\b(অবস্থা|দেখুন|আমার)\b',
+        r'\b(स्थिती|पहा|माझा)\b',
+        r'\b(સ્થિતિ|જુઓ|મારું)\b',
+        r'\b(ਸਥਿਤੀ|ਵੇਖੋ|ਮੇਰੀ)\b',
+        r'\b(حالت|دیکھیں|میرا)\b'
+    ]
+    
+    # Time indicators
+    time_patterns = [
+        r'\d{4}-\d{2}-\d{2}',  # ISO date
+        r'\d{1,2}:\d{2}',  # Time
+        r'\d{1,2}\s*(am|pm|AM|PM)',  # 12hr format
+        r'\b(today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b',
+        r'\b(आज|कल|सोमवार|मंगलवार|बुधवार|गुरुवार|शुक्रवार|शनिवार|रविवार)\b',
+        r'\b(இன்று|நாளை|திங்கள்|செவ்வாய்|புதன்|வியாழன்|வெள்ளி|சனி|ஞாயிறு)\b',
+        r'\b(ఈరోజు|రేపు|సోమవారం|మంగళవారం|బుధవారం|గురువారం|శుక్రవారం|శనివారం|ఆదివారం)\b',
+        r'\b(ಇಂದು|ನಾಳೆ|ಸೋಮವಾರ|ಮಂಗಳವಾರ|ಬುಧವಾರ|ಗುರುವಾರ|ಶುಕ್ರವಾರ|ಶನಿವಾರ|ಭಾನುವಾರ)\b',
+        r'\b(ഇന്ന്|നാളെ|തിങ്കൾ|ചൊവ്വ|ബുധൻ|വ്യാഴം|വെള്ളി|ശനി|ഞായർ)\b',
+        r'\b(আজ|কাল|সোমবার|মঙ্গলবার|বুধবার|বৃহস্পতিবার|শুক্রবার|শনিবার|রবিবার)\b',
+        r'\b(आज|उद्या|सोमवार|मंगळवार|बुधवार|गुरुवार|शुक्रवार|शनिवार|रविवार)\b',
+        r'\b(આજે|કાલે|સોમવાર|મંગળવાર|બુધવાર|ગુરુવાર|શુક્રવાર|શનિવાર|રવિવાર)\b',
+        r'\b(ਅੱਜ|ਕੱਲ੍ਹ|ਸੋਮਵਾਰ|ਮੰਗਲਵਾਰ|ਬੁੱਧਵਾਰ|ਵੀਰਵਾਰ|ਸ਼ੁੱਕਰਵਾਰ|ਸ਼ਨੀਚਰਵਾਰ|ਐਤਵਾਰ)\b',
+        r'\b(آج|کل|پیر|منگل|بدھ|جمعرات|جمعہ|ہفتہ|اتوار)\b',
+        r'\b(kal|aaj|subah|sham|dopahar|shaam)\b'  # Common transliterations
+    ]
+    
+    # Appointment ID patterns
+    id_pattern = r'\b(appointment|booking|id|number)?\s*[:#]?\s*\d+\b'
+    
+    # Check for booking intent
+    is_booking = any(re.search(pattern, msg_lower, re.IGNORECASE | re.UNICODE) for pattern in booking_keywords)
+    
+    # Determine action
+    action = None
+    has_cancel = any(re.search(pattern, msg_lower, re.IGNORECASE | re.UNICODE) for pattern in cancel_keywords)
+    has_reschedule = any(re.search(pattern, msg_lower, re.IGNORECASE | re.UNICODE) for pattern in reschedule_keywords)
+    has_status = any(re.search(pattern, msg_lower, re.IGNORECASE | re.UNICODE) for pattern in status_keywords)
+    
+    if has_cancel:
+        action = 'cancel'
+    elif has_reschedule:
+        action = 'reschedule'
+    elif has_status:
+        action = 'status'
+    elif is_booking:
+        action = 'book'
+    
+    # Check for time and ID
+    has_time = any(re.search(pattern, msg_lower, re.IGNORECASE | re.UNICODE) for pattern in time_patterns)
+    has_appointment_id = bool(re.search(id_pattern, msg_lower, re.IGNORECASE))
+    
+    # Calculate regex-based confidence score
+    confidence = 0.0
+    if has_appointment_id:
+        confidence = 0.95  # Very high confidence if ID is present
+    elif is_booking and has_time:
+        confidence = 0.85  # High confidence with explicit keywords + time
+    elif is_booking:
+        confidence = 0.65  # Medium confidence with just keywords
+    elif has_time and len(message.split()) <= 5:
+        confidence = 0.40  # Low-medium confidence for short messages with time
+    else:
+        confidence = 0.20  # Low confidence
+    
+    # Boost confidence for clear action words
+    if has_cancel or has_reschedule or has_status:
+        confidence = min(0.95, confidence + 0.15)
+    
+    # Context-aware boost from history
+    if history:
+        recent_messages = [h.get('content', '').lower() for h in history[-3:]]
+        booking_context = any(
+            any(kw in msg for kw in ['appointment', 'booking', 'schedule', 'अपॉइंटमेंट', 'बुकिंग'])
+            for msg in recent_messages
+        )
+        if booking_context:
+            confidence = min(0.95, confidence + 0.15)
+    
+    return {
+        'is_booking': is_booking or confidence >= 0.5,
+        'action': action,
+        'has_time': has_time,
+        'has_appointment_id': has_appointment_id,
+        'confidence': confidence,
+        'detection_method': 'regex'
+    }
+
+
+def _hybrid_intent_detection(message: str, history: list = None) -> dict:
+    """
+    Hybrid intent detection combining regex and LLM.
+    
+    Strategy:
+    1. Fast path: Regex detection (instant, free)
+    2. High confidence (>0.75): Return immediately
+    3. Ambiguous (0.30-0.75): Use LLM to validate
+    4. Low confidence (<0.30): LLM decides
+    
+    Returns: {
+        'is_booking': bool,
+        'action': 'book'|'reschedule'|'cancel'|'status'|None,
+        'confidence': float,
+        'has_time': bool,
+        'has_appointment_id': bool,
+        'detection_method': 'regex'|'llm'|'hybrid',
+        'language': str (detected language code)
+    }
+    """
+    # Step 1: Fast regex detection
+    regex_result = _detect_booking_intent(message, history)
+    regex_confidence = regex_result['confidence']
+    
+    # Detect language from message
+    detected_lang = 'en'
+    if any(ord(c) >= 0x0900 and ord(c) <= 0x097F for c in message):
+        detected_lang = 'hi'  # Hindi (Devanagari)
+    elif any(ord(c) >= 0x0B80 and ord(c) <= 0x0BFF for c in message):
+        detected_lang = 'ta'  # Tamil
+    elif any(ord(c) >= 0x0C00 and ord(c) <= 0x0C7F for c in message):
+        detected_lang = 'te'  # Telugu
+    elif any(ord(c) >= 0x0C80 and ord(c) <= 0x0CFF for c in message):
+        detected_lang = 'kn'  # Kannada
+    elif any(ord(c) >= 0x0D00 and ord(c) <= 0x0D7F for c in message):
+        detected_lang = 'ml'  # Malayalam
+    elif any(ord(c) >= 0x0980 and ord(c) <= 0x09FF for c in message):
+        detected_lang = 'bn'  # Bengali
+    elif any(ord(c) >= 0x0A80 and ord(c) <= 0x0AFF for c in message):
+        detected_lang = 'gu'  # Gujarati
+    elif any(ord(c) >= 0x0A00 and ord(c) <= 0x0A7F for c in message):
+        detected_lang = 'pa'  # Punjabi
+    
+    # Step 2: High confidence? Return immediately
+    if regex_confidence >= 0.75:
+        return {
+            **regex_result,
+            'language': detected_lang,
+            'detection_method': 'regex'
+        }
+    
+    # Step 3: Very low confidence and no booking signal? Skip LLM
+    if regex_confidence < 0.20 and not regex_result['is_booking']:
+        return {
+            **regex_result,
+            'language': detected_lang,
+            'detection_method': 'regex'
+        }
+    
+    # Step 4: Ambiguous case - use LLM to validate
+    llm_result = _llm_intent_detection(message, history)
+    llm_confidence = llm_result.get('confidence', 0.0)
+    
+    # Step 5: Combine results with weighted average
+    # If both agree, boost confidence
+    # If they disagree, trust higher confidence source
+    
+    if regex_result['is_booking'] == llm_result['is_booking']:
+        # Agreement: boost confidence
+        final_confidence = (regex_confidence * 0.35) + (llm_confidence * 0.65)
+        final_confidence = min(0.98, final_confidence + 0.10)  # Bonus for agreement
+        final_action = llm_result['action'] or regex_result['action']
+        final_is_booking = regex_result['is_booking']
+        method = 'hybrid-agreement'
+    else:
+        # Disagreement: trust higher confidence
+        if llm_confidence > regex_confidence:
+            final_confidence = llm_confidence * 0.90  # Slight penalty for disagreement
+            final_action = llm_result['action']
+            final_is_booking = llm_result['is_booking']
+            method = 'hybrid-llm'
+        else:
+            final_confidence = regex_confidence * 0.90
+            final_action = regex_result['action']
+            final_is_booking = regex_result['is_booking']
+            method = 'hybrid-regex'
+    
+    return {
+        'is_booking': final_is_booking,
+        'action': final_action,
+        'confidence': final_confidence,
+        'has_time': regex_result['has_time'],
+        'has_appointment_id': regex_result['has_appointment_id'],
+        'language': detected_lang,
+        'detection_method': method,
+        'llm_reasoning': llm_result.get('reasoning', '')
+    }
+
 
 def get_bot_meta(conn, bot_id: str, org_id: str):
     with conn.cursor() as cur:
@@ -123,6 +476,149 @@ def _cleanup_old_conversations(conn):
             )
     except Exception:
         pass
+
+
+def _detect_booking_intent(message: str, history: list = None) -> dict:
+    """
+    Smart multi-language booking intent detection.
+    Supports: English, Hindi, Tamil, Telugu, Kannada, Malayalam, Bengali, Marathi, Gujarati, Punjabi, Urdu
+    
+    Returns: {
+        'is_booking': bool,
+        'intent': 'new_booking'|'reschedule'|'cancel'|'check_status'|None,
+        'has_time': bool,
+        'has_appointment_id': bool,
+        'confidence': float,
+        'language': str
+    }
+    """
+    import re
+    msg_lower = message.lower()
+    
+    # Detect language
+    detected_lang = 'en'  # default
+    if any(ord(c) >= 0x0900 and ord(c) <= 0x097F for c in message):  # Devanagari
+        detected_lang = 'hi'
+    elif any(ord(c) >= 0x0B80 and ord(c) <= 0x0BFF for c in message):  # Tamil
+        detected_lang = 'ta'
+    elif any(ord(c) >= 0x0C00 and ord(c) <= 0x0C7F for c in message):  # Telugu
+        detected_lang = 'te'
+    elif any(ord(c) >= 0x0C80 and ord(c) <= 0x0CFF for c in message):  # Kannada
+        detected_lang = 'kn'
+    elif any(ord(c) >= 0x0D00 and ord(c) <= 0x0D7F for c in message):  # Malayalam
+        detected_lang = 'ml'
+    elif any(ord(c) >= 0x0980 and ord(c) <= 0x09FF for c in message):  # Bengali
+        detected_lang = 'bn'
+    elif any(ord(c) >= 0x0A80 and ord(c) <= 0x0AFF for c in message):  # Gujarati
+        detected_lang = 'gu'
+    elif any(ord(c) >= 0x0A00 and ord(c) <= 0x0A7F for c in message):  # Punjabi
+        detected_lang = 'pa'
+    
+    # Booking keywords in multiple languages
+    booking_keywords = {
+        # English
+        'book', 'booking', 'schedule', 'appointment', 'reserve', 'slot', 'meeting',
+        # Hindi (Devanagari)
+        'बुक', 'बुकिंग', 'अपॉइंटमेंट', 'समय', 'मिलना', 'नियुक्ति',
+        # Hindi (Romanized)
+        'appoint', 'milna', 'samay',
+        # Tamil
+        'பதிவு', 'முன்பதிவு', 'சந்திப்பு', 'நேரம்',
+        # Telugu
+        'బుక్', 'అపాయింట్మెంట్', 'సమయం', 'కాలం',
+        # Bengali
+        'বুক', 'বুকিং', 'অ্যাপয়েন্টমেন্ট', 'সময়',
+        # Marathi
+        'बुकिंग', 'भेटीची', 'वेळ',
+        # Gujarati
+        'બુકિંગ', 'મુલાકાત', 'સમય',
+        # Kannada
+        'ಬುಕ್ಕಿಂಗ್', 'ಭೇಟಿ', 'ಸಮಯ',
+        # Malayalam
+        'ബുക്കിംഗ്', 'കൂടിക്കാഴ്ച', 'സമയം',
+        # Punjabi
+        'ਬੁਕਿੰਗ', 'ਮੁਲਾਕਾਤ', 'ਸਮਾਂ',
+        # Urdu (Romanized)
+        'waqt', 'mulaqat',
+    }
+    
+    # Reschedule keywords
+    reschedule_keywords = {
+        'reschedule', 'change', 'modify', 'move', 'shift', 'postpone',
+        'बदलना', 'परिवर्तन', 'மாற்று', 'మార్చు', 'পরিবর্তন', 'बदल', 'બદલો', 'ಬದಲಾಯಿಸಿ', 'മാറ്റുക', 'ਬਦਲੋ'
+    }
+    
+    # Cancel keywords
+    cancel_keywords = {
+        'cancel', 'delete', 'remove', 'drop',
+        'रद्द', 'கைவிடு', 'రద్దు', 'বাতিল', 'रद्द', 'રદ', 'ರದ್ದುಮಾಡಿ', 'റദ്ദാക്കുക', 'ਰੱਦ'
+    }
+    
+    # Status check keywords
+    status_keywords = {
+        'status', 'check', 'view', 'see', 'show', 'my booking', 'my appointment',
+        'स्थिति', 'देखना', 'நிலை', 'స్థితి', 'অবস্থা', 'स्थिती', 'સ્થિતિ', 'ಸ್ಥಿತಿ', 'സ്ഥിതി', 'ਸਥਿਤੀ'
+    }
+    
+    # Check for booking intent
+    has_booking_word = any(kw in msg_lower for kw in booking_keywords)
+    has_reschedule = any(kw in msg_lower for kw in reschedule_keywords)
+    has_cancel = any(kw in msg_lower for kw in cancel_keywords)
+    has_status = any(kw in msg_lower for kw in status_keywords)
+    
+    # Date/Time patterns
+    date_patterns = [
+        r'\d{4}-\d{2}-\d{2}',  # ISO format
+        r'\d{1,2}[/-]\d{1,2}[/-]\d{2,4}',  # Various formats
+        r'\b(today|tomorrow|kal|आज|कल|இன்று|நாளை|ఈరోజు|రేపు|আজ|কাল|आज|उद्या|આજે|કાલે|ಇಂದು|ನಾಳೆ|ഇന്ന്|നാളെ|ਅੱਜ|ਕੱਲ)\b',
+        r'\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b',
+    ]
+    
+    time_patterns = [
+        r'\b\d{1,2}:\d{2}\b',  # 14:30
+        r'\b\d{1,2}\s*(am|pm|AM|PM)\b',  # 2 PM
+        r'\b(morning|afternoon|evening|night|सुबह|दोपहर|शाम|रात)\b',
+    ]
+    
+    has_time = any(re.search(pattern, msg_lower) for pattern in time_patterns)
+    has_appointment_id = bool(re.search(r'\b(appointment|booking|id)?\s*[:#]?\s*\d+\b', msg_lower))
+    
+    # Calculate confidence based on signals
+    confidence = 0.0
+    intent = None
+    is_booking = False
+    
+    if has_cancel:
+        intent = 'cancel'
+        is_booking = True
+        confidence = 0.9 if has_appointment_id else 0.6
+    elif has_reschedule:
+        intent = 'reschedule'
+        is_booking = True
+        confidence = 0.8 if has_appointment_id else 0.5
+    elif has_status:
+        intent = 'check_status'
+        is_booking = True
+        confidence = 0.7
+    elif has_booking_word:
+        intent = 'new_booking'
+        is_booking = True
+        confidence = 0.8 if has_time else 0.6
+    
+    # Boost confidence if context from history suggests booking
+    if history and is_booking:
+        recent_messages = ' '.join([h.get('content', '') for h in history[-3:]])
+        if any(kw in recent_messages.lower() for kw in booking_keywords):
+            confidence = min(confidence + 0.2, 1.0)
+    
+    return {
+        'is_booking': is_booking,
+        'intent': intent,
+        'has_time': has_time,
+        'has_appointment_id': has_appointment_id,
+        'confidence': confidence,
+        'language': detected_lang
+    }
 
 
 def _rate_limit(bot_id: str, org_id: str, limit: int = 30, window_seconds: int = 60):
@@ -196,24 +692,17 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
             if not x_bot_key or x_bot_key != public_api_key:
                 raise HTTPException(status_code=403, detail="Invalid bot key")
         _rate_limit(bot_id, body.org_id)
-        import re
-        msg_raw = (body.message or '').strip()
-        low = msg_raw.lower()
-        has_time = bool(
-            re.search(r"\d{4}-\d{2}-\d{2}", msg_raw) or
-            re.search(r"\b(today|tomorrow|mon|tue|wed|thu|fri|sat|sun)\b", low) or
-            re.search(r"\b(\d{1,2}:\d{2})\b", msg_raw) or
-            re.search(r"\b\d{1,2}\s*(am|pm)\b", low)
-        )
-        has_action = bool(re.search(r"\b(book|schedule|reschedule|cancel|change)\b", low))
-        has_id = bool(re.search(r"\b(?:appointment|id)\s*[:#]?\s*\d+\b", low))
-        if (behavior or '').strip().lower() == 'appointment' and (has_time or has_action or has_id):
+        
+        # Smart booking intent detection for appointment bots
+        if (behavior or '').strip().lower() == 'appointment':
             import re
             msg = body.message.strip()
             m0lower = msg.lower()
+            
+            # Handle greetings
             is_greet = bool(m0lower) and (
-                m0lower in {"hi", "hello", "hey", "hola", "hii"} or
-                m0lower.startswith("hi ") or m0lower.startswith("hello ") or m0lower.startswith("hey ")
+                m0lower in {"hi", "hello", "hey", "hola", "hii", "bonjour", "hallo", "ciao", "namaste"} or
+                any(m0lower.startswith(g + " ") for g in ["hi", "hello", "hey", "hola", "bonjour", "hallo"])
             )
             if is_greet:
                 wm = None
@@ -228,14 +717,108 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
                 except Exception:
                     wm = None
                 def gen_hi():
-                    text = wm or "Hello! How can I help you?"
+                    text = wm or "Hello! I'm here to help you book an appointment. When would you like to schedule a visit?"
                     yield f"data: {text}\n\n"
                     yield "event: end\n\n"
                 _ensure_usage_table(conn)
                 _log_chat_usage(conn, body.org_id, bot_id, 0.0, False)
                 return StreamingResponse(gen_hi(), media_type="text/event-stream")
+            
+            # Get conversation history for context-aware detection
+            history = _get_conversation_history(conn, body.session_id, body.org_id, bot_id, max_messages=10)
+            
+            # Hybrid intent detection (regex + LLM for ambiguous cases)
+            intent_result = _hybrid_intent_detection(msg, history)
+            
             base = getattr(settings, 'PUBLIC_API_BASE_URL', '') or ''
             form_url = f"{base}/api/form/{bot_id}?org_id={body.org_id}" + (f"&bot_key={public_api_key}" if public_api_key else "")
+            
+            # Handle different intents with user-friendly responses
+            if intent_result['is_booking'] and intent_result['confidence'] >= 0.4:
+                intent_type = intent_result.get('action', 'book')
+                # Map action to response key
+                if intent_type == 'book':
+                    intent_type = 'new_booking'
+                elif intent_type == 'status':
+                    intent_type = 'check_status'
+                    
+                lang = intent_result.get('language', 'en')
+                
+                # Multi-language responses with booking form links
+                responses = {
+                    'new_booking': {
+                        'en': f"I'd be happy to help you book an appointment! Please use our [booking form]({form_url}) to see available time slots and choose a convenient time.",
+                        'hi': f"मुझे आपकी अपॉइंटमेंट बुक करने में मदद करके खुशी होगी! कृपया उपलब्ध समय देखने के लिए हमारा [बुकिंग फॉर्म]({form_url}) उपयोग करें।",
+                        'ta': f"உங்கள் சந்திப்பை பதிவு செய்ய நான் உதவ மகிழ்ச்சியாக உள்ளேன்! கிடைக்கும் நேர இடைவெளிகளைப் பார்க்க எங்கள் [பதிவு படிவத்தை]({form_url}) பயன்படுத்தவும்.",
+                        'te': f"మీ అపాయింట్మెంట్ బుక్ చేయడానికి నేను సంతోషంగా సహాయం చేస్తాను! అందుబాటులో ఉన్న సమయ స్లాట్లను చూడటానికి మా [బుకింగ్ ఫారమ్]({form_url}) ఉపయోగించండి.",
+                        'kn': f"ನಿಮ್ಮ ಅಪಾಯಿಂಟ್ಮೆಂಟ್ ಬುಕ್ ಮಾಡಲು ನಾನು ಸಹಾಯ ಮಾಡಲು ಸಂತೋಷಪಡುತ್ತೇನೆ! ಲಭ್ಯವಿರುವ ಸಮಯ ಸ್ಲಾಟ್ಗಳನ್ನು ನೋಡಲು ನಮ್ಮ [ಬುಕಿಂಗ್ ಫಾರ್ಮ್]({form_url}) ಬಳಸಿ.",
+                        'ml': f"നിങ്ങളുടെ അപ്പോയിന്റ്മെന്റ് ബുക്ക് ചെയ്യാൻ സഹായിക്കുന്നതിൽ എനിക്ക് സന്തോഷമുണ്ട്! ലഭ്യമായ സമയ സ്ലോട്ടുകൾ കാണാൻ ഞങ്ങളുടെ [ബുക്കിംഗ് ഫോം]({form_url}) ഉപയോഗിക്കുക.",
+                        'bn': f"আপনার অ্যাপয়েন্টমেন্ট বুক করতে সাহায্য করে আমি খুশি! উপলব্ধ সময় স্লট দেখতে আমাদের [বুকিং ফর্ম]({form_url}) ব্যবহার করুন।",
+                        'mr': f"तुमची भेट बुक करण्यास मदत करण्यात मला आनंद होईल! उपलब्ध वेळ स्लॉट पाहण्यासाठी आमचा [बुकिंग फॉर्म]({form_url}) वापरा.",
+                        'gu': f"તમારી મુલાકાત બુક કરવામાં મદદ કરીને મને આનંદ થશે! ઉપલબ્ધ સમય સ્લોટ જોવા માટે અમારા [બુકિંગ ફોર્મ]({form_url}) નો ઉપયોગ કરો.",
+                        'pa': f"ਤੁਹਾਡੀ ਮੁਲਾਕਾਤ ਬੁੱਕ ਕਰਨ ਵਿੱਚ ਮਦਦ ਕਰਕੇ ਮੈਨੂੰ ਖੁਸ਼ੀ ਹੋਵੇਗੀ! ਉਪਲਬਧ ਸਮਾਂ ਸਲਾਟ ਦੇਖਣ ਲਈ ਸਾਡੇ [ਬੁਕਿੰਗ ਫਾਰਮ]({form_url}) ਦੀ ਵਰਤੋਂ ਕਰੋ.",
+                        'es': f"¡Con gusto te ayudo a reservar una cita! Por favor usa nuestro [formulario de reserva]({form_url}) para ver los horarios disponibles.",
+                        'fr': f"Je serais ravi de vous aider à prendre un rendez-vous! Veuillez utiliser notre [formulaire de réservation]({form_url}) pour voir les créneaux disponibles.",
+                        'de': f"Gerne helfe ich Ihnen einen Termin zu buchen! Bitte nutzen Sie unser [Buchungsformular]({form_url}) um verfügbare Zeiten zu sehen.",
+                        'pt': f"Ficarei feliz em ajudá-lo a agendar uma consulta! Por favor, use nosso [formulário de agendamento]({form_url}) para ver os horários disponíveis.",
+                    },
+                    'reschedule': {
+                        'en': f"To reschedule your appointment, please provide your appointment ID or use the [booking form]({form_url}) to select a new time.",
+                        'hi': f"अपनी अपॉइंटमेंट को बदलने के लिए, कृपया अपनी अपॉइंटमेंट ID प्रदान करें या नया समय चुनने के लिए [बुकिंग फॉर्म]({form_url}) का उपयोग करें।",
+                        'ta': f"உங்கள் சந்திப்பை மாற்ற, உங்கள் அப்பாயின்ட்மென்ட் ID வழங்கவும் அல்லது புதிய நேரத்தைத் தேர்ந்தெடுக்க [பதிவு படிவத்தை]({form_url}) பயன்படுத்தவும்.",
+                        'te': f"మీ అపాయింట్మెంట్ను మార్చడానికి, మీ అపాయింట్మెంట్ ID అందించండి లేదా కొత్త సమయాన్ని ఎంచుకోవడానికి [బుకింగ్ ఫారమ్]({form_url}) ఉపయోగించండి.",
+                        'kn': f"ನಿಮ್ಮ ಅಪಾಯಿಂಟ್ಮೆಂಟ್ ಬದಲಾಯಿಸಲು, ನಿಮ್ಮ ಅಪಾಯಿಂಟ್ಮೆಂಟ್ ID ನೀಡಿ ಅಥವಾ ಹೊಸ ಸಮಯವನ್ನು ಆಯ್ಕೆ ಮಾಡಲು [ಬುಕಿಂಗ್ ಫಾರ್ಮ್]({form_url}) ಬಳಸಿ.",
+                        'ml': f"നിങ്ങളുടെ അപ്പോയിന്റ്മെന്റ് മാറ്റാൻ, നിങ്ങളുടെ അപ്പോയിന്റ്മെന്റ് ID നൽകുക അല്ലെങ്കിൽ പുതിയ സമയം തിരഞ്ഞെടുക്കാൻ [ബുക്കിംഗ് ഫോം]({form_url}) ഉപയോഗിക്കുക.",
+                        'bn': f"আপনার অ্যাপয়েন্টমেন্ট পরিবর্তন করতে, আপনার অ্যাপয়েন্টমেন্ট ID প্রদান করুন অথবা নতুন সময় নির্বাচন করতে [বুকিং ফর্ম]({form_url}) ব্যবহার করুন।",
+                        'mr': f"तुमची भेट बदलण्यासाठी, तुमचा अपॉइंटमेंट ID द्या किंवा नवीन वेळ निवडण्यासाठी [बुकिंग फॉर्म]({form_url}) वापरा.",
+                        'gu': f"તમારી મુલાકાત બદલવા માટે, તમારી એપોઇન્ટમેન્ટ ID આપો અથવા નવો સમય પસંદ કરવા માટે [બુકિંગ ફોર્મ]({form_url}) વાપરો.",
+                        'pa': f"ਆਪਣੀ ਮੁਲਾਕਾਤ ਬਦਲਣ ਲਈ, ਆਪਣੀ ਮੁਲਾਕਾਤ ID ਦਿਓ ਜਾਂ ਨਵਾਂ ਸਮਾਂ ਚੁਣਨ ਲਈ [ਬੁਕਿੰਗ ਫਾਰਮ]({form_url}) ਵਰਤੋਂ ਕਰੋ.",
+                        'es': f"Para reprogramar su cita, proporcione su ID de cita o use el [formulario de reserva]({form_url}) para seleccionar un nuevo horario.",
+                        'fr': f"Pour reprogrammer votre rendez-vous, veuillez fournir votre ID de rendez-vous ou utiliser le [formulaire de réservation]({form_url}).",
+                        'de': f"Um Ihren Termin zu verschieben, geben Sie bitte Ihre Termin-ID an oder nutzen Sie das [Buchungsformular]({form_url}).",
+                        'pt': f"Para remarcar sua consulta, forneça seu ID de consulta ou use o [formulário de agendamento]({form_url}).",
+                    },
+                    'cancel': {
+                        'en': "I can help you cancel your appointment. Please provide your appointment ID (e.g., 'appointment 123' or 'ID: 123').",
+                        'hi': "मैं आपकी अपॉइंटमेंट रद्द करने में मदद कर सकता हूं। कृपया अपनी अपॉइंटमेंट ID बताएं (जैसे, 'अपॉइंटमेंट 123' या 'ID: 123')।",
+                        'ta': "உங்கள் சந்திப்பை ரத்து செய்ய நான் உதவ முடியும். உங்கள் அப்பாயின்ட்மென்ட் ID வழங்கவும் (எ.கா., 'அப்பாயின்ட்மென்ட் 123' அல்லது 'ID: 123').",
+                        'te': "మీ అపాయింట్మెంట్ను రద్దు చేయడానికి నేను సహాయం చేయగలను. దయచేసి మీ అపాయింట్మెంట్ ID అందించండి (ఉదా., 'అపాయింట్మెంట్ 123' లేదా 'ID: 123').",
+                        'kn': "ನಿಮ್ಮ ಅಪಾಯಿಂಟ್ಮೆಂಟ್ ರದ್ದುಗೊಳಿಸಲು ನಾನು ಸಹಾಯ ಮಾಡಬಲ್ಲೆ. ದಯವಿಟ್ಟು ನಿಮ್ಮ ಅಪಾಯಿಂಟ್ಮೆಂಟ್ ID ನೀಡಿ (ಉದಾ., 'ಅಪಾಯಿಂಟ್ಮೆಂಟ್ 123' ಅಥವಾ 'ID: 123').",
+                        'ml': "നിങ്ങളുടെ അപ്പോയിന്റ്മെന്റ് റദ്ദാക്കാൻ എനിക്ക് സഹായിക്കാം. ദയവായി നിങ്ങളുടെ അപ്പോയിന്റ്മെന്റ് ID നൽകുക (ഉദാ., 'അപ്പോയിന്റ്മെന്റ് 123' അല്ലെങ്കിൽ 'ID: 123').",
+                        'bn': "আপনার অ্যাপয়েন্টমেন্ট বাতিল করতে আমি সাহায্য করতে পারি। অনুগ্রহ করে আপনার অ্যাপয়েন্টমেন্ট ID প্রদান করুন (যেমন, 'অ্যাপয়েন্টমেন্ট 123' বা 'ID: 123')।",
+                        'mr': "तुमची भेट रद्द करण्यात मी मदत करू शकतो. कृपया तुमचा अपॉइंटमेंट ID द्या (उदा., 'अपॉइंटमेंट 123' किंवा 'ID: 123').",
+                        'gu': "હું તમારી મુલાકાત રદ કરવામાં મદદ કરી શકું છું. કૃપા કરીને તમારી એપોઇન્ટમેન્ટ ID આપો (દા.ત., 'એપોઇન્ટમેન્ટ 123' અથવા 'ID: 123').",
+                        'pa': "ਮੈਂ ਤੁਹਾਡੀ ਮੁਲਾਕਾਤ ਰੱਦ ਕਰਨ ਵਿੱਚ ਮਦਦ ਕਰ ਸਕਦਾ ਹਾਂ। ਕਿਰਪਾ ਕਰਕੇ ਆਪਣੀ ਮੁਲਾਕਾਤ ID ਦਿਓ (ਜਿਵੇਂ, 'ਮੁਲਾਕਾਤ 123' ਜਾਂ 'ID: 123').",
+                        'es': "Puedo ayudarte a cancelar tu cita. Por favor proporciona tu ID de cita (ej., 'cita 123' o 'ID: 123').",
+                        'fr': "Je peux vous aider à annuler votre rendez-vous. Veuillez fournir votre ID de rendez-vous (ex., 'rendez-vous 123' ou 'ID: 123').",
+                        'de': "Ich kann Ihnen helfen, Ihren Termin abzusagen. Bitte geben Sie Ihre Termin-ID an (z.B. 'Termin 123' oder 'ID: 123').",
+                        'pt': "Posso ajudá-lo a cancelar sua consulta. Por favor, forneça seu ID de consulta (ex., 'consulta 123' ou 'ID: 123').",
+                    },
+                    'check_status': {
+                        'en': "I can check your appointment status. Please provide your appointment ID or email address.",
+                        'hi': "मैं आपकी अपॉइंटमेंट की स्थिति जांच सकता हूं। कृपया अपनी अपॉइंटमेंट ID या ईमेल पता बताएं।",
+                        'ta': "உங்கள் சந்திப்பு நிலையை நான் சரிபார்க்க முடியும். உங்கள் அப்பாயின்ட்மென்ட் ID அல்லது மின்னஞ்சல் முகவரியை வழங்கவும்.",
+                        'te': "మీ అపాయింట్మెంట్ స్థితిని నేను తనిఖీ చేయగలను. దయచేసి మీ అపాయింట్మెంట్ ID లేదా ఇమెయిల్ చిరునామా అందించండి.",
+                        'kn': "ನಿಮ್ಮ ಅಪಾಯಿಂಟ್ಮೆಂಟ್ ಸ್ಥಿತಿಯನ್ನು ನಾನು ಪರಿಶೀಲಿಸಬಹುದು. ದಯವಿಟ್ಟು ನಿಮ್ಮ ಅಪಾಯಿಂಟ್ಮೆಂಟ್ ID ಅಥವಾ ಇಮೇಲ್ ವಿಳಾಸವನ್ನು ನೀಡಿ.",
+                        'ml': "നിങ്ങളുടെ അപ്പോയിന്റ്മെന്റ് സ്ഥിതി എനിക്ക് പരിശോധിക്കാം. ദയവായി നിങ്ങളുടെ അപ്പോയിന്റ്മെന്റ് ID അല്ലെങ്കിൽ ഇമെയിൽ വിലാസം നൽകുക.",
+                        'bn': "আমি আপনার অ্যাপয়েন্টমেন্ট স্ট্যাটাস চেক করতে পারি। অনুগ্রহ করে আপনার অ্যাপয়েন্টমেন্ট ID বা ইমেইল ঠিকানা প্রদান করুন।",
+                        'mr': "मी तुमच्या भेटीची स्थिती तपासू शकतो. कृपया तुमचा अपॉइंटमेंट ID किंवा ईमेल पत्ता द्या.",
+                        'gu': "હું તમારી મુલાકાતની સ્થિતિ તપાસી શકું છું. કૃપા કરીને તમારી એપોઇન્ટમેન્ટ ID અથવા ઇમેઇલ સરનામું આપો.",
+                        'pa': "ਮੈਂ ਤੁਹਾਡੀ ਮੁਲਾਕਾਤ ਦੀ ਸਥਿਤੀ ਜਾਂਚ ਸਕਦਾ ਹਾਂ। ਕਿਰਪਾ ਕਰਕੇ ਆਪਣੀ ਮੁਲਾਕਾਤ ID ਜਾਂ ਈਮੇਲ ਪਤਾ ਦਿਓ।",
+                        'es': "Puedo verificar el estado de tu cita. Por favor proporciona tu ID de cita o correo electrónico.",
+                        'fr': "Je peux vérifier le statut de votre rendez-vous. Veuillez fournir votre ID de rendez-vous ou adresse e-mail.",
+                        'de': "Ich kann Ihren Terminstatus überprüfen. Bitte geben Sie Ihre Termin-ID oder E-Mail-Adresse an.",
+                        'pt': "Posso verificar o status da sua consulta. Por favor, forneça seu ID de consulta ou endereço de e-mail.",
+                    }
+                }
+                
+                response_text = responses.get(intent_type, {}).get(lang, responses.get(intent_type, {}).get('en', f"Please use our [booking form]({form_url}) to schedule your appointment."))
+                
+                _ensure_usage_table(conn)
+                _log_chat_usage(conn, body.org_id, bot_id, intent_result['confidence'], False)
+                return {"answer": response_text, "citations": [], "similarity": intent_result['confidence']}
+            
+            # Continue with existing appointment ID management code
             def _norm_month(s: str) -> int:
                 m = s.lower()
                 d = {
@@ -827,6 +1410,70 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
             if not x_bot_key or x_bot_key != public_api_key:
                 raise HTTPException(status_code=403, detail="Invalid bot key")
         _rate_limit(bot_id, body.org_id)
+        
+        # Smart booking intent detection for appointment bots
+        if (behavior or '').strip().lower() == 'appointment':
+            import re
+            msg = body.message.strip()
+            
+            # Get conversation history for context-aware detection
+            history = _get_conversation_history(conn, body.session_id, body.org_id, bot_id, max_messages=10)
+            
+            # Hybrid intent detection (regex + LLM for ambiguous cases)
+            intent_result = _hybrid_intent_detection(msg, history)
+            
+            base = getattr(settings, 'PUBLIC_API_BASE_URL', '') or ''
+            form_url = f"{base}/api/form/{bot_id}?org_id={body.org_id}" + (f"&bot_key={public_api_key}" if public_api_key else "")
+            
+            # Handle different intents with user-friendly responses
+            if intent_result['is_booking'] and intent_result['confidence'] >= 0.4:
+                intent_type = intent_result.get('action', 'book')
+                # Map action to response key
+                if intent_type == 'book':
+                    intent_type = 'new_booking'
+                elif intent_type == 'status':
+                    intent_type = 'check_status'
+                    
+                lang = intent_result.get('language', 'en')
+                
+                # Multi-language responses with booking form links (same as non-streaming)
+                responses = {
+                    'new_booking': {
+                        'en': f"I'd be happy to help you book an appointment! Please use our [booking form]({form_url}) to see available time slots and choose a convenient time.",
+                        'hi': f"मुझे आपकी अपॉइंटमेंट बुक करने में मदद करके खुशी होगी! कृपया उपलब्ध समय देखने के लिए हमारा [बुकिंग फॉर्म]({form_url}) उपयोग करें।",
+                        'ta': f"உங்கள் சந்திப்பை பதிவு செய்ய நான் உதவ மகிழ்ச்சியாக உள்ளேன்! கிடைக்கும் நேர இடைவெளிகளைப் பார்க்க எங்கள் [பதிவு படிவத்தை]({form_url}) பயன்படுத்தவும்.",
+                        'te': f"మీ అపాయింట్మెంట్ బుక్ చేయడానికి నేను సంతోషంగా సహాయం చేస్తాను! అందుబాటులో ఉన్న సమయ స్లాట్లను చూడటానికి మా [బుకింగ్ ఫారమ్]({form_url}) ఉపయోగించండి.",
+                        'kn': f"ನಿಮ್ಮ ಅಪಾಯಿಂಟ್ಮೆಂಟ್ ಬುಕ್ ಮಾಡಲು ನಾನು ಸಹಾಯ ಮಾಡಲು ಸಂತೋಷಪಡುತ್ತೇನೆ! ಲಭ್ಯವಿರುವ ಸಮಯ ಸ್ಲಾಟ್ಗಳನ್ನು ನೋಡಲು ನಮ್ಮ [ಬುಕಿಂಗ್ ಫಾರ್ಮ್]({form_url}) ಬಳಸಿ.",
+                        'ml': f"നിങ്ങളുടെ അപ്പോയിന്റ്മെന്റ് ബുക്ക് ചെയ്യാൻ സഹായിക്കുന്നതിൽ എനിക്ക് സന്തോഷമുണ്ട്! ലഭ്യമായ സമയ സ്ലോട്ടുകൾ കാണാൻ ഞങ്ങളുടെ [ബുക്കിംഗ് ഫോം]({form_url}) ഉപയോഗിക്കുക.",
+                        'bn': f"আপনার অ্যাপয়েন্টমেন্ট বুক করতে সাহায্য করে আমি খুশি! উপলব্ধ সময় স্লট দেখতে আমাদের [বুকিং ফর্ম]({form_url}) ব্যবহার করুন।",
+                        'mr': f"तुमची भेट बुक करण্यास मदत करण्यात मला आनंद होईल! उपलब्ध वेळ स्लॉट पाहण्यासाठी आमचा [बुकिंग फॉर्म]({form_url}) वापरा.",
+                        'gu': f"તમારી મુલાકાત બુક કરવામાં મદદ કરીને મને આનંદ થશે! ઉપલબ્ધ સમય સ્લોટ જોવા માટે અમારા [બુકિંગ ફોર્મ]({form_url}) નો ઉપયોગ કરો.",
+                        'pa': f"ਤੁਹਾਡੀ ਮੁਲਾਕਾਤ ਬੁੱਕ ਕਰਨ ਵਿੱਚ ਮਦਦ ਕਰਕੇ ਮੈਨੂੰ ਖੁਸ਼ੀ ਹੋਵੇਗੀ! ਉਪਲਬਧ ਸਮਾਂ ਸਲਾਟ ਦੇਖਣ ਲਈ ਸਾਡੇ [ਬੁਕਿੰਗ ਫਾਰਮ]({form_url}) ਦੀ ਵਰਤੋਂ ਕਰੋ.",
+                    },
+                    'reschedule': {
+                        'en': f"To reschedule your appointment, please provide your appointment ID or use the [booking form]({form_url}) to select a new time.",
+                        'hi': f"अपनी अपॉइंटमेंट को बदलने के लिए, कृपया अपनी अपॉइंटमेंट ID प्रदान करें या नया समय चुनने के लिए [बुकिंग फॉर्म]({form_url}) का उपयोग करें।",
+                        'ta': f"உங்கள் சந்திப்பை மாற்ற, உங்கள் அப்பாயின்ட்மென்ட் ID வழங்கவும் அல்லது புதிய நேரத்தைத் தேர்ந்தெடுக்க [பதிவு படிவத்தை]({form_url}) பயன்படுத்தவும்.",
+                        'te': f"మీ అపాయింట్మెంట్ను మార్చడానికి, మీ అపాయింట్మెంట్ ID అందించండి లేదా కొత్త సమయాన్ని ఎంచుకోవడానికి [బుకింగ్ ఫారమ్]({form_url}) ఉపయోగించండి.",
+                        'kn': f"ನಿಮ್ಮ ಅಪಾಯಿಂಟ್ಮೆಂಟ್ ಬದಲಾಯಿಸಲು, ನಿಮ್ಮ ಅಪಾಯಿಂಟ್ಮೆಂಟ್ ID ನೀಡಿ ಅಥವಾ ಹೊಸ ಸಮಯವನ್ನು ಆಯ್ಕೆ ಮಾಡಲು [ಬುಕಿಂಗ್ ಫಾರ್ಮ್]({form_url}) ಬಳಸಿ.",
+                        'ml': f"നിങ്ങളുടെ അപ്പോയിന്റ്മെന്റ് മാറ്റാൻ, നിങ്ങളുടെ അപ്പോയിന്റ്മെന്റ് ID നൽകുക അല്ലെങ്കിൽ പുതിയ സമയം തിരഞ്ഞെടുക്കാൻ [ബുക്കിംഗ് ഫോം]({form_url}) ഉപയോഗിക്കുക.",
+                        'bn': f"আপনার অ্যাপয়েন্টমেন্ট পরিবর্তন করতে, আপনার অ্যাপয়েন্টমেন্ট ID প্রদান করুন অথবা নতুন সময় নির্বাচন করতে [বুকিং ফর্ম]({form_url}) ব্যবহার করুন।",
+                        'mr': f"तुमची भेट बदलण्यासाठी, तुमचा अपॉइंटमेंट ID द्या किंवा नवीन वेळ निवडण्यासाठी [बुकिंग फॉर्म]({form_url}) वापरा.",
+                        'gu': f"તમારી મુલાકાત બદલવા માટે, તમારી એપોઇન્ટમેન્ટ ID આપો અથવા નવો સમય પસંદ કરવા માટે [બુકિંગ ફોર્મ]({form_url}) વાપરો.",
+                        'pa': f"ਆਪਣੀ ਮੁਲਾਕਾਤ ਬਦਲਣ ਲਈ, ਆਪਣੀ ਮੁਲਾਕਾਤ ID ਦਿਓ ਜਾਂ ਨਵਾਂ ਸਮਾਂ ਚੁਣਨ ਲਈ [ਬੁਕਿੰਗ ਫਾਰਮ]({form_url}) ਵਰਤੋਂ ਕਰੋ.",
+                    }
+                }
+                
+                response_text = responses.get(intent_type, {}).get(lang, responses.get(intent_type, {}).get('en', f"Please use our [booking form]({form_url}) to schedule your appointment."))
+                
+                def gen_response():
+                    yield f"data: {response_text}\n\n"
+                    yield "event: end\n\n"
+                
+                _ensure_usage_table(conn)
+                _log_chat_usage(conn, body.org_id, bot_id, intent_result['confidence'], False)
+                return StreamingResponse(gen_response(), media_type="text/event-stream")
+            
         import re
         msg_raw = (body.message or '').strip()
         low = msg_raw.lower()
