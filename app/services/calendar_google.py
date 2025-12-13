@@ -75,6 +75,34 @@ def _decrypt(x: str) -> Optional[str]:
         return None
 
 
+def refresh_access_token(refresh_token: str) -> Optional[str]:
+    """Refresh an expired access token using the refresh token"""
+    try:
+        from google.auth.transport.requests import Request
+        from google.oauth2.credentials import Credentials
+    except Exception:
+        return None
+    
+    try:
+        creds = Credentials(
+            token=None,
+            refresh_token=refresh_token,
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=settings.GOOGLE_CLIENT_ID,
+            client_secret=settings.GOOGLE_CLIENT_SECRET,
+            scopes=["https://www.googleapis.com/auth/calendar"]
+        )
+        
+        # Refresh the token
+        creds.refresh(Request())
+        
+        # Return the new access token
+        return creds.token
+    except Exception as e:
+        print(f"Token refresh failed: {str(e)}")
+        return None
+
+
 def build_service_from_tokens(access_token: str, refresh_token: Optional[str], token_expiry: Optional[str]):
     try:
         from google.oauth2.credentials import Credentials
@@ -161,6 +189,13 @@ def list_events_oauth(svc, calendar_id: str, time_min_iso: str, time_max_iso: st
 
 def create_event_oauth(svc, calendar_id: str, summary: str, start_iso: str, end_iso: str, attendees: Optional[List[str]] = None, timezone: Optional[str] = None, description: Optional[str] = None) -> Optional[str]:
     try:
+        print(f"🔧 create_event_oauth called with:")
+        print(f"   - calendar_id: {calendar_id}")
+        print(f"   - summary: {summary}")
+        print(f"   - description length: {len(description) if description else 0} chars")
+        if description:
+            print(f"   - description preview: {description[:200]}...")
+        
         ev = {
             "summary": summary,
             "start": {"dateTime": start_iso, **({"timeZone": timezone} if timezone else {})},
@@ -168,16 +203,29 @@ def create_event_oauth(svc, calendar_id: str, summary: str, start_iso: str, end_
         }
         if description:
             ev["description"] = description
+            print(f"   ✓ Description added to event body")
+        else:
+            print(f"   ⚠ No description provided")
         if attendees:
             ev["attendees"] = [{"email": a} for a in attendees]
-        for _ in range(3):
+        
+        last_error = None
+        for attempt in range(3):
             try:
                 created = svc.events().insert(calendarId=calendar_id, body=ev).execute()
                 return created.get("id")
-            except Exception:
+            except Exception as e:
+                last_error = e
+                print(f"   Attempt {attempt + 1}/3 failed: {str(e)}")
                 continue
+        
+        if last_error:
+            print(f"   All retry attempts failed. Last error: {str(last_error)}")
         return None
-    except Exception:
+    except Exception as e:
+        print(f"   Exception in create_event_oauth: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return None
 
 

@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.routes.chat import router as chat_router
 from app.routes.ingest import router as ingest_router
+from app.routes.dynamic_forms import router as forms_router
 
 app = FastAPI(title="Multi-tenant AI Chatbot")
 
@@ -29,6 +30,7 @@ app.add_middleware(
 
 app.include_router(chat_router, prefix="/api")
 app.include_router(ingest_router, prefix="/api")
+app.include_router(forms_router, prefix="/api")
 
 def _init_schema():
     try:
@@ -137,6 +139,7 @@ def _init_schema():
                       refresh_token_enc text,
                       token_expiry timestamptz,
                       calendar_id text,
+                      timezone text,
                       watch_channel_id text,
                       watch_resource_id text,
                       watch_expiration timestamptz,
@@ -240,6 +243,336 @@ def _init_schema():
                 try:
                     cur.execute("alter table conversation_history enable row level security;")
                     cur.execute("alter table conversation_history force row level security;")
+                except Exception:
+                    pass
+                
+                # Dynamic Forms Tables
+                # Form configurations
+                cur.execute(
+                    """
+                    create table if not exists form_configurations (
+                      id text primary key default gen_random_uuid()::text,
+                      org_id text not null,
+                      bot_id text not null,
+                      name text not null,
+                      description text,
+                      industry text,
+                      is_active boolean not null default true,
+                      created_at timestamptz not null default now(),
+                      updated_at timestamptz not null default now(),
+                      unique(bot_id)
+                    )
+                    """
+                )
+                
+                # Form fields
+                cur.execute(
+                    """
+                    create table if not exists form_fields (
+                      id text primary key default gen_random_uuid()::text,
+                      form_config_id text not null,
+                      field_name text not null,
+                      field_label text not null,
+                      field_type text not null,
+                      field_order int not null default 0,
+                      is_required boolean not null default false,
+                      placeholder text,
+                      help_text text,
+                      validation_rules jsonb,
+                      options jsonb,
+                      default_value text,
+                      is_active boolean not null default true,
+                      created_at timestamptz not null default now(),
+                      updated_at timestamptz not null default now()
+                    )
+                    """
+                )
+                
+                # Booking resources (doctors, rooms, staff, etc.)
+                cur.execute(
+                    """
+                    create table if not exists booking_resources (
+                      id text primary key default gen_random_uuid()::text,
+                      org_id text not null,
+                      bot_id text not null,
+                      resource_type text not null,
+                      resource_name text not null,
+                      resource_code text,
+                      description text,
+                      capacity_per_slot int not null default 1,
+                      metadata jsonb,
+                      is_active boolean not null default true,
+                      created_at timestamptz not null default now(),
+                      updated_at timestamptz not null default now()
+                    )
+                    """
+                )
+                
+                # Resource schedules
+                cur.execute(
+                    """
+                    create table if not exists resource_schedules (
+                      id text primary key default gen_random_uuid()::text,
+                      resource_id text not null,
+                      day_of_week int,
+                      specific_date date,
+                      start_time time not null,
+                      end_time time not null,
+                      slot_duration_minutes int not null default 30,
+                      is_available boolean not null default true,
+                      metadata jsonb,
+                      created_at timestamptz not null default now(),
+                      updated_at timestamptz not null default now()
+                    )
+                    """
+                )
+                
+                # Enhanced bookings with dynamic form data
+                cur.execute(
+                    """
+                    create table if not exists bookings (
+                      id bigserial primary key,
+                      org_id text not null,
+                      bot_id text not null,
+                      form_config_id text,
+                      customer_name text not null,
+                      customer_email text not null,
+                      customer_phone text,
+                      booking_date date not null,
+                      start_time time not null,
+                      end_time time not null,
+                      resource_id text,
+                      resource_name text,
+                      form_data jsonb not null default '{}'::jsonb,
+                      status text not null default 'pending',
+                      cancellation_reason text,
+                      calendar_event_id text,
+                      external_event_id text,
+                      notes text,
+                      created_at timestamptz not null default now(),
+                      updated_at timestamptz not null default now(),
+                      confirmed_at timestamptz,
+                      cancelled_at timestamptz
+                    )
+                    """
+                )
+                
+                # Add external_event_id column if it doesn't exist (migration)
+                try:
+                    cur.execute("""
+                        ALTER TABLE bookings 
+                        ADD COLUMN IF NOT EXISTS external_event_id text
+                    """)
+                    print("✓ Added external_event_id column to bookings table")
+                except Exception as e:
+                    print(f"Note: {str(e)}")
+                
+                # Form templates
+                cur.execute(
+                    """
+                    create table if not exists form_templates (
+                      id text primary key default gen_random_uuid()::text,
+                      name text not null,
+                      industry text not null,
+                      description text,
+                      template_data jsonb not null,
+                      is_public boolean not null default true,
+                      created_at timestamptz not null default now(),
+                      updated_at timestamptz not null default now()
+                    )
+                    """
+                )
+                
+                # Create indexes for dynamic forms
+                try:
+                    cur.execute("create index if not exists idx_form_configs_bot on form_configurations(bot_id)")
+                    cur.execute("create index if not exists idx_form_fields_config on form_fields(form_config_id)")
+                    cur.execute("create index if not exists idx_booking_resources_bot on booking_resources(bot_id)")
+                    cur.execute("create index if not exists idx_resource_schedules_resource on resource_schedules(resource_id)")
+                    cur.execute("create index if not exists idx_bookings_bot on bookings(bot_id)")
+                    cur.execute("create index if not exists idx_bookings_date on bookings(booking_date)")
+                    cur.execute("create index if not exists idx_bookings_resource on bookings(resource_id)")
+                except Exception:
+                    pass
+                
+                # Create helper function for resource capacity checking
+                try:
+                    cur.execute("""
+                        create or replace function check_resource_capacity(
+                            p_resource_id text,
+                            p_booking_date date,
+                            p_start_time time,
+                            p_end_time time
+                        ) returns boolean as $$
+                        declare
+                            v_capacity int;
+                            v_booked_count int;
+                        begin
+                            -- Get resource capacity
+                            select capacity_per_slot into v_capacity
+                            from booking_resources
+                            where id = p_resource_id and is_active = true;
+                            
+                            if v_capacity is null then
+                                return false;
+                            end if;
+                            
+                            -- Count existing bookings for this slot
+                            select count(*) into v_booked_count
+                            from bookings
+                            where resource_id = p_resource_id
+                              and booking_date = p_booking_date
+                              and start_time = p_start_time
+                              and end_time = p_end_time
+                              and status not in ('cancelled', 'rejected');
+                            
+                            -- Return true if there's capacity available
+                            return v_booked_count < v_capacity;
+                        end;
+                        $$ language plpgsql;
+                    """)
+                    print("✓ Created check_resource_capacity function")
+                except Exception as e:
+                    print(f"Note: check_resource_capacity function: {str(e)}")
+                
+                # Create helper function for slot capacity checking (bot-level)
+                try:
+                    cur.execute("""
+                        create or replace function check_slot_capacity(
+                            p_bot_id text,
+                            p_booking_date date,
+                            p_start_time time,
+                            p_end_time time
+                        ) returns boolean as $$
+                        declare
+                            v_capacity int;
+                            v_booked_count int;
+                        begin
+                            -- Get bot's capacity per slot setting
+                            select capacity_per_slot into v_capacity
+                            from bot_booking_settings
+                            where bot_id = p_bot_id;
+                            
+                            if v_capacity is null then
+                                v_capacity := 1; -- Default capacity
+                            end if;
+                            
+                            -- Count existing bookings for this slot
+                            select count(*) into v_booked_count
+                            from bookings
+                            where bot_id = p_bot_id
+                              and booking_date = p_booking_date
+                              and start_time = p_start_time
+                              and end_time = p_end_time
+                              and status not in ('cancelled', 'rejected');
+                            
+                            -- Return true if there's capacity available
+                            return v_booked_count < v_capacity;
+                        end;
+                        $$ language plpgsql;
+                    """)
+                    print("✓ Created check_slot_capacity function")
+                except Exception as e:
+                    print(f"Note: check_slot_capacity function: {str(e)}")
+                
+                # Create helper function for getting available slots
+                try:
+                    cur.execute("""
+                        create or replace function get_available_slots(
+                            p_resource_id text,
+                            p_date date
+                        ) returns table(slot_start time, slot_end time, available_capacity int) as $$
+                        declare
+                            v_schedule record;
+                            v_capacity int;
+                            v_booked int;
+                            v_current_time time;
+                            v_slot_duration int;
+                        begin
+                            -- Get resource capacity
+                            select capacity_per_slot into v_capacity
+                            from booking_resources
+                            where id = p_resource_id and is_active = true;
+                            
+                            if v_capacity is null then
+                                return;
+                            end if;
+                            
+                            -- Get schedule for the day
+                            for v_schedule in
+                                select start_time, end_time, slot_duration_minutes
+                                from resource_schedules
+                                where resource_id = p_resource_id
+                                  and is_available = true
+                                  and (
+                                    (specific_date = p_date) or
+                                    (specific_date is null and day_of_week = extract(dow from p_date))
+                                  )
+                            loop
+                                v_current_time := v_schedule.start_time;
+                                v_slot_duration := coalesce(v_schedule.slot_duration_minutes, 30);
+                                
+                                while v_current_time + (v_slot_duration || ' minutes')::interval <= v_schedule.end_time loop
+                                    -- Count bookings for this slot
+                                    select count(*) into v_booked
+                                    from bookings
+                                    where resource_id = p_resource_id
+                                      and booking_date = p_date
+                                      and start_time = v_current_time
+                                      and status not in ('cancelled', 'rejected');
+                                    
+                                    slot_start := v_current_time;
+                                    slot_end := v_current_time + (v_slot_duration || ' minutes')::interval;
+                                    available_capacity := v_capacity - coalesce(v_booked, 0);
+                                    
+                                    return next;
+                                    
+                                    v_current_time := v_current_time + (v_slot_duration || ' minutes')::interval;
+                                end loop;
+                            end loop;
+                        end;
+                        $$ language plpgsql;
+                    """)
+                    print("✓ Created get_available_slots function")
+                except Exception as e:
+                    print(f"Note: get_available_slots function: {str(e)}")
+                
+                # Enable RLS on dynamic forms tables
+                try:
+                    cur.execute("alter table form_configurations enable row level security;")
+                    cur.execute("alter table form_configurations force row level security;")
+                    cur.execute("alter table form_fields enable row level security;")
+                    cur.execute("alter table form_fields force row level security;")
+                    cur.execute("alter table booking_resources enable row level security;")
+                    cur.execute("alter table booking_resources force row level security;")
+                    cur.execute("alter table resource_schedules enable row level security;")
+                    cur.execute("alter table resource_schedules force row level security;")
+                    cur.execute("alter table bookings enable row level security;")
+                    cur.execute("alter table bookings force row level security;")
+                    cur.execute("alter table form_templates enable row level security;")
+                    cur.execute("alter table form_templates force row level security;")
+                except Exception:
+                    pass
+                
+                # Insert default templates
+                try:
+                    cur.execute("""
+                        insert into form_templates (id, name, industry, description, template_data)
+                        values 
+                        ('healthcare-template', 'Healthcare - Doctor Appointment', 'healthcare', 
+                         'Standard medical appointment booking form', 
+                         '{"fields": [{"field_name": "appointment_type", "field_label": "Appointment Type", "field_type": "select", "field_order": 1, "is_required": true, "options": [{"value": "consultation", "label": "General Consultation"}, {"value": "followup", "label": "Follow-up Visit"}, {"value": "emergency", "label": "Emergency"}]}, {"field_name": "department", "field_label": "Department", "field_type": "select", "field_order": 2, "is_required": true, "options": [{"value": "cardiology", "label": "Cardiology"}, {"value": "neurology", "label": "Neurology"}, {"value": "pediatrics", "label": "Pediatrics"}, {"value": "general", "label": "General Medicine"}]}, {"field_name": "symptoms", "field_label": "Symptoms", "field_type": "textarea", "field_order": 3, "is_required": false, "placeholder": "Describe your symptoms"}]}'::jsonb)
+                        on conflict (id) do nothing
+                    """)
+                    
+                    cur.execute("""
+                        insert into form_templates (id, name, industry, description, template_data)
+                        values 
+                        ('salon-template', 'Salon - Beauty Appointment', 'salon', 
+                         'Beauty salon and spa booking form',
+                         '{"fields": [{"field_name": "service", "field_label": "Service Type", "field_type": "select", "field_order": 1, "is_required": true, "options": [{"value": "haircut", "label": "Haircut"}, {"value": "coloring", "label": "Hair Coloring"}, {"value": "manicure", "label": "Manicure"}, {"value": "pedicure", "label": "Pedicure"}]}, {"field_name": "duration", "field_label": "Estimated Duration", "field_type": "select", "field_order": 2, "is_required": true, "options": [{"value": "30", "label": "30 minutes"}, {"value": "60", "label": "1 hour"}, {"value": "90", "label": "1.5 hours"}]}]}'::jsonb)
+                        on conflict (id) do nothing
+                    """)
                 except Exception:
                     pass
                 
