@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, Header
 from pydantic import BaseModel
-from typing import List
+from typing import List, Union
 from groq import Groq
 from typing import Optional
 from starlette.responses import StreamingResponse
@@ -1108,11 +1108,26 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
                         return {"answer": ("Please provide: " + ", ".join(missing) + ". Or use the [booking form](" + form_url + ")"), "citations": [], "similarity": 0.0}
                     occ = len(items) if items else 0
                     with conn.cursor() as cur:
-                        cur.execute(
-                            "select count(*) from bot_appointments where (org_id=%s or org_id::text=%s) and bot_id=%s and start_iso=%s and end_iso=%s and status in ('scheduled','booked')",
-                            (normalize_org_id(body.org_id), body.org_id, bot_id, si, ei),
-                        )
-                        occ_db = int(cur.fetchone()[0])
+                        # Check capacity from unified bookings table
+                        try:
+                            # Extract date and time from ISO string
+                            import datetime as dt_check
+                            dt_obj = dt_check.datetime.fromisoformat(si.replace('Z', '+00:00'))
+                            booking_date = dt_obj.date()
+                            start_time = dt_obj.time()
+                            
+                            cur.execute(
+                                "select count(*) from bookings where bot_id=%s and booking_date=%s and start_time=%s and status not in ('cancelled','rejected')",
+                                (bot_id, booking_date, start_time),
+                            )
+                            occ_db = int(cur.fetchone()[0])
+                        except Exception:
+                            # Fallback to counting all bookings in that time range
+                            cur.execute(
+                                "select count(*) from bookings where bot_id=%s and status not in ('cancelled','rejected')",
+                                (bot_id,),
+                            )
+                            occ_db = 0  # If we can't parse, don't block
                     if max(occ, occ_db) < capacity:
                         apid = None
                         ext_id = None
@@ -2185,6 +2200,7 @@ def _ensure_oauth_table(conn):
               refresh_token_enc text,
               token_expiry timestamptz,
               calendar_id text,
+              timezone text,
               watch_channel_id text,
               watch_resource_id text,
               watch_expiration timestamptz,
@@ -2194,6 +2210,15 @@ def _ensure_oauth_table(conn):
             )
             """
         )
+        # Add timezone column if it doesn't exist (migration)
+        try:
+            cur.execute("""
+                ALTER TABLE bot_calendar_oauth 
+                ADD COLUMN IF NOT EXISTS timezone text
+            """)
+            print("✓ Added timezone column to bot_calendar_oauth")
+        except Exception as e:
+            print(f"Note: {str(e)}")
 
 def _ensure_booking_settings_table(conn):
     with conn.cursor() as cur:
@@ -2418,6 +2443,21 @@ def set_booking_settings(bot_id: str, body: BookingSettingsBody, authorization: 
                 ),
             )
             row = cur.fetchone()
+            
+            # Also update timezone in bot_calendar_oauth if Google Calendar is connected
+            if body.timezone:
+                try:
+                    cur.execute(
+                        """
+                        UPDATE bot_calendar_oauth
+                        SET timezone = %s
+                        WHERE bot_id = %s AND provider = 'google'
+                        """,
+                        (body.timezone, bot_id)
+                    )
+                    print(f"✅ Updated Google Calendar timezone to: {body.timezone}")
+                except Exception as e:
+                    print(f"⚠️ Could not update calendar timezone: {str(e)}")
         import json
         aw = None
         try:
@@ -2553,13 +2593,22 @@ def booking_availability(bot_id: str, org_id: str, time_min_iso: str, time_max_i
             extra = {}
             try:
                 with conn.cursor() as cur:
-                    cur.execute(
-                        "select start_iso, count(*) from bot_appointments where (org_id=%s or org_id::text=%s) and bot_id=%s and start_iso>=%s and end_iso<=%s and status in ('scheduled','booked') group by start_iso",
-                        (normalize_org_id(org_id), org_id, bot_id, time_min_iso, time_max_iso),
-                    )
+                    # Count bookings from unified bookings table grouped by start time
+                    cur.execute("""
+                        select 
+                            (booking_date || 'T' || start_time)::text as start_iso,
+                            count(*) as booking_count
+                        from bookings 
+                        where bot_id=%s 
+                          and status not in ('cancelled', 'rejected')
+                          and booking_date >= %s::date
+                          and booking_date <= %s::date
+                        group by booking_date, start_time
+                    """, (bot_id, time_min_iso[:10], time_max_iso[:10]))
                     rows = cur.fetchall()
                     extra = {r[0]: int(r[1]) for r in rows}
-            except Exception:
+            except Exception as e:
+                print(f"Error counting bookings: {e}")
                 extra = {}
             from app.services.booking import compute_availability
             slots = compute_availability(time_min_iso, time_max_iso, slotm, capacity, items, tzv, aw, extra, min_notice, max_future)
@@ -2883,18 +2932,27 @@ def booking_form(bot_id: str, org_id: str, bot_key: Optional[str] = None):
         "<style>"
         "*{margin:0;padding:0;box-sizing:border-box}"
         "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:12px}"
-        ".container{background:#fff;border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,0.3);max-width:500px;width:100%;padding:32px}"
+        ".container{background:#fff;border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,0.3);max-width:600px;width:100%;padding:32px;max-height:90vh;overflow-y:auto}"
         ".header{margin-bottom:28px}"
         ".header h1{font-size:28px;font-weight:700;color:#1a1a1a;margin-bottom:8px}"
         ".header p{font-size:14px;color:#666}"
         ".form-group{margin-bottom:20px}"
         ".form-group label{display:block;font-size:13px;font-weight:600;color:#333;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.5px}"
-        ".form-group input[type='text'],.form-group input[type='email'],.form-group input[type='tel'],.form-group input[type='date']{width:100%;padding:12px 14px;border:2px solid #e0e0e0;border-radius:8px;font-size:14px;transition:all 0.3s ease;font-family:inherit}"
-        ".form-group input:focus{outline:none;border-color:#667eea;box-shadow:0 0 0 3px rgba(102,126,234,0.1)}"
-        ".form-group input.error{border-color:#dc2626}"
+        ".form-group input[type='text'],.form-group input[type='email'],.form-group input[type='tel'],.form-group input[type='number'],.form-group input[type='date'],.form-group input[type='time'],.form-group select,.form-group textarea{width:100%;padding:12px 14px;border:2px solid #e0e0e0;border-radius:8px;font-size:14px;transition:all 0.3s ease;font-family:inherit}"
+        ".form-group textarea{min-height:80px;resize:vertical}"
+        ".form-group input:focus,.form-group select:focus,.form-group textarea:focus{outline:none;border-color:#667eea;box-shadow:0 0 0 3px rgba(102,126,234,0.1)}"
+        ".form-group input.error,.form-group select.error,.form-group textarea.error{border-color:#dc2626}"
         ".form-group.required label::after{content:' *';color:#dc2626}"
+        ".help-text{font-size:12px;color:#666;margin-top:4px}"
+        ".checkbox-group{display:flex;align-items:center;gap:8px}"
+        ".checkbox-group input[type='checkbox']{width:auto;margin:0}"
+        ".radio-group{display:flex;flex-direction:column;gap:8px}"
+        ".radio-option{display:flex;align-items:center;gap:8px;padding:8px;border:2px solid #e0e0e0;border-radius:6px;cursor:pointer}"
+        ".radio-option:hover{background:#f9f9f9}"
+        ".radio-option input[type='radio']{width:auto;margin:0}"
         ".section{margin-bottom:24px;padding-bottom:24px;border-bottom:1px solid #e5e5e5}"
         ".section:last-of-type{border-bottom:none}"
+        ".section-title{font-size:16px;font-weight:700;color:#333;margin-bottom:16px}"
         ".time-slots{display:grid;grid-template-columns:repeat(auto-fill,minmax(80px,1fr));gap:8px;margin-top:12px}"
         ".time-slot{padding:10px;border:2px solid #e0e0e0;border-radius:8px;background:#f9f9f9;cursor:pointer;text-align:center;font-size:13px;font-weight:600;color:#333;transition:all 0.2s ease}"
         ".time-slot:hover{border-color:#667eea;background:#f0f4ff}"
@@ -2907,44 +2965,184 @@ def booking_form(bot_id: str, org_id: str, bot_key: Optional[str] = None):
         "#submit:hover{transform:translateY(-2px);box-shadow:0 10px 25px rgba(102,126,234,0.4)}"
         "#submit:active{transform:translateY(0)}"
         "#submit:disabled{opacity:0.6;cursor:not-allowed;transform:none}"
-        "#out{margin-top:16px;padding:14px;border-radius:8px;font-size:14px;font-weight:600}"
-        "#out.success{background:#d1fae5;color:#065f46;border-left:4px solid #10b981}"
-        "#out.error{background:#fee2e2;color:#7f1d1d;border-left:4px solid #dc2626}"
-        "#out.info{background:#dbeafe;color:#1e40af;border-left:4px solid #3b82f6}"
+        "#out{margin-top:16px;padding:14px;border-radius:8px;font-size:14px;font-weight:600;display:none}"
+        "#out.success{background:#d1fae5;color:#065f46;border-left:4px solid #10b981;display:block}"
+        "#out.error{background:#fee2e2;color:#7f1d1d;border-left:4px solid #dc2626;display:block}"
+        "#out.info{background:#dbeafe;color:#1e40af;border-left:4px solid #3b82f6;display:block}"
         ".required-fields{font-size:12px;color:#999;margin-top:12px}"
-        ".success-icon{color:#10b981;margin-right:8px}"
-        ".error-icon{color:#dc2626;margin-right:8px}"
         "</style>"
         "</head><body>"
         "<div class=\"container\">"
-        "<div class=\"header\"><h1>Book Appointment</h1><p>Select your preferred date and time</p></div>"
-        "<div id=\"form\">"
-        "<div class=\"section\">"
-        "<div class=\"form-group required\"><label>Full Name</label><input id=\"name\" type=\"text\" placeholder=\"John Doe\"></div>"
-        "<div class=\"form-group required\"><label>Email</label><input id=\"email\" type=\"email\" placeholder=\"john@example.com\"></div>"
-        "<div class=\"form-group\"><label>Phone Number</label><input id=\"phone\" type=\"tel\" placeholder=\"+1 (555) 123-4567\"></div>"
-        "<div class=\"form-group\"><label>Notes or Reason</label><input id=\"notes\" type=\"text\" placeholder=\"Brief description...\"></div>"
-        "</div>"
-        "<div class=\"section\">"
-        "<div class=\"form-group required\"><label>Select Date</label><input id=\"date\" type=\"date\"></div>"
-        "<div class=\"time-slots\" id=\"slots\"></div>"
-        "<div class=\"slot-status\" id=\"slot-status\" style=\"display:none\"></div>"
-        "</div>"
-        "<div class=\"button-group\"><button id=\"submit\" type=\"button\">Book Appointment</button></div>"
-        "<div class=\"required-fields\">* Required fields</div>"
+        "<div class=\"header\"><h1>Book Appointment</h1><p>Fill in your details and select a time</p></div>"
+        "<div id=\"form-container\">"
+        "<div class=\"section\"><div class=\"loading-spinner\"></div> Loading form...</div>"
         "</div>"
         "<div id=\"out\"></div>"
         "</div>"
         "<script>"
-        "const ORG='" + org_id + "',BOT='" + bot_id + "',BOT_KEY='" + (bot_key or '') + "',API='" + api_url + "';let chosen=null,loading=false;"
-        "function showMsg(t,ty){ty=ty||'info';const o=document.getElementById('out');o.textContent=t;o.className=ty;o.style.display='block';}"
-        "function setErr(id,e){const el=document.getElementById(id);if(el)el.classList.toggle('error',e);}"
-        "async function loadReq(){try{const h={};if(BOT_KEY)h['X-Bot-Key']=BOT_KEY;const r=await fetch(API+'/api/bots/'+BOT+'/booking/settings?org_id='+ORG,{headers:h});const d=await r.json();window.REQ=d.required_user_fields||[];}catch(e){console.error('loadReq error:',e);window.REQ=[];}}"
-        "async function loadSlots(){const dt=document.getElementById('date').value;if(!dt){showMsg('Please select a date','error');return;}loading=true;const h={};if(BOT_KEY)h['X-Bot-Key']=BOT_KEY;const el=document.getElementById('slots'),st=document.getElementById('slot-status');el.innerHTML='';st.innerHTML='<span class=\"loading-spinner\"></span> Loading...';st.style.display='block';"
-        "const fetch4=async(day)=>{const tm1=day+'T00:00:00',tm2=day+'T23:59:59';const url=API+'/api/bots/'+BOT+'/booking/availability?org_id='+ORG+'&time_min_iso='+encodeURIComponent(tm1)+'&time_max_iso='+encodeURIComponent(tm2);try{const r=await fetch(url,{headers:h});if(!r.ok){const err=await r.text();console.error('API error for',day,':',r.status,err);return{slots:[]};}const d=await r.json();return d;}catch(e){console.error('Fetch error for',day,':',e);return{slots:[]};}};try{const d=await fetch4(dt);const slots=Array.isArray(d.slots)?d.slots:[];console.log('Slots loaded:',slots);el.innerHTML='';if(slots.length===0){st.textContent='No available slots. Checking next 7 days...';for(let i=1;i<=7;i++){const nxt=new Date(new Date(dt).getTime()+i*86400000);const day2=nxt.toISOString().slice(0,10);const d2=await fetch4(day2);const sl2=Array.isArray(d2.slots)?d2.slots:[];if(sl2.length>0){document.getElementById('date').value=day2;loadSlots();return;}}st.textContent='No available slots in the next 7 days';}else{st.style.display='none';slots.forEach(s=>{const b=document.createElement('button');b.type='button';b.className='time-slot';b.textContent=new Date(s.start).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});b.onclick=()=>{chosen=s;document.querySelectorAll('.time-slot').forEach(x=>x.classList.remove('selected'));b.classList.add('selected');st.style.display='none';};el.appendChild(b);});}}catch(e){console.error('Load error:',e);st.textContent='Error: '+e.message;}finally{loading=false;}}"
-        "document.getElementById('date').addEventListener('change',loadSlots);"
-        "document.getElementById('submit').addEventListener('click',async()=>{const nm=document.getElementById('name').value.trim(),em=document.getElementById('email').value.trim(),ph=document.getElementById('phone').value.trim(),nt=document.getElementById('notes').value.trim();const req=window.REQ||[];const miss=req.filter(f=>{if(f==='name')return !nm;if(f==='email')return !em;if(f==='phone')return !ph;if(f==='notes')return !nt;return false;});['name','email','phone','notes'].forEach(id=>{setErr(id,miss.includes(id));});if(miss.length>0){showMsg('Fill required: '+miss.join(', '),'error');return;}if(!chosen){showMsg('Select a time slot','error');return;}const pay={org_id:ORG,name:nm,email:em,phone:ph,notes:nt,start_iso:chosen.start,end_iso:chosen.end};const h={'Content-Type':'application/json'};if(BOT_KEY)h['X-Bot-Key']=BOT_KEY;const btn=document.getElementById('submit');btn.disabled=true;btn.textContent='Booking...';try{const r=await fetch(API+'/api/bots/'+BOT+'/booking/appointment',{method:'POST',headers:h,body:JSON.stringify(pay)});if(!r.ok){const dat=await r.json().catch(()=>({}));showMsg('Error: '+(dat.detail||'Error '+r.status),'error');btn.disabled=false;btn.textContent='Book Appointment';return;}const dat=await r.json();const startDate=new Date(chosen.start);const timeStr=startDate.toLocaleString();const msg='Appointment booked successfully!\\n\\nBooking ID: '+dat.appointment_id+'\\nName: '+nm+'\\nEmail: '+em+(ph?'\\nPhone: '+ph:'')+'\\nTime: '+timeStr+(nt?'\\nNotes: '+nt:'');showMsg('Booked! ID: '+dat.appointment_id,'success');btn.textContent='Success';document.getElementById('form').style.opacity='0.5';if(window.parent&&window.parent.postMessage){window.parent.postMessage({type:'BOOKING_SUCCESS',message:msg,bookingId:dat.appointment_id,details:{name:nm,email:em,phone:ph,notes:nt,time:timeStr}},'*');}setTimeout(()=>{window.close();},2000);}catch(e){console.error('Submit error:',e);showMsg('Request failed','error');btn.disabled=false;btn.textContent='Book Appointment';}});"
-        "loadReq();(function(){const d=document.getElementById('date');if(d){const today=new Date();d.value=today.toISOString().slice(0,10);loadSlots();}})();"
+        "const ORG='" + org_id + "',BOT='" + bot_id + "',BOT_KEY='" + (bot_key or '') + "',API='" + api_url + "';"
+        "let chosen=null,loading=false,formFields=[],resources={},formConfig=null;"
+        "function showMsg(t,ty){const o=document.getElementById('out');o.textContent=t;o.className=ty;o.style.display='block';}"
+        
+        # Load form configuration and fields
+        "async function loadFormConfig(){"
+        "  try{"
+        "    const h={};if(BOT_KEY)h['X-Bot-Key']=BOT_KEY;"
+        "    const r1=await fetch(API+'/api/form-configs/'+BOT,{headers:h});"
+        "    if(r1.ok){"
+        "      formConfig=await r1.json();"
+        "      const r2=await fetch(API+'/api/form-configs/'+formConfig.id+'/fields',{headers:h});"
+        "      if(r2.ok){"
+        "        const data=await r2.json();"
+        "        formFields=data.fields||[];"
+        "      }"
+        "      const r3=await fetch(API+'/api/resources/'+BOT,{headers:h});"
+        "      if(r3.ok){"
+        "        const data=await r3.json();"
+        "        resources=(data.resources||[]).reduce((acc,r)=>{acc[r.resource_type]=acc[r.resource_type]||[];acc[r.resource_type].push(r);return acc;},{});"
+        "      }"
+        "    }"
+        "    renderForm();"
+        "  }catch(e){console.error('Form config error:',e);renderDefaultForm();}"
+        "}"
+        
+        # Render dynamic form fields
+        "function renderForm(){"
+        "  const container=document.getElementById('form-container');"
+        "  let html='<div class=\"section\"><div class=\"section-title\">Personal Information</div>';"
+        "  html+='<div class=\"form-group required\"><label>Full Name</label><input id=\"customer_name\" type=\"text\" placeholder=\"John Doe\" required></div>';"
+        "  html+='<div class=\"form-group required\"><label>Email</label><input id=\"customer_email\" type=\"email\" placeholder=\"john@example.com\" required></div>';"
+        "  html+='<div class=\"form-group\"><label>Phone</label><input id=\"customer_phone\" type=\"tel\" placeholder=\"+1234567890\"></div>';"
+        "  html+='</div>';"
+        "  if(formFields.length>0){"
+        "    html+='<div class=\"section\"><div class=\"section-title\">Appointment Details</div>';"
+        "    formFields.forEach(f=>{"
+        "      const req=f.is_required?'required':'';const reqClass=f.is_required?' required':'';"
+        "      html+='<div class=\"form-group'+reqClass+'\">';"
+        "      html+='<label>'+f.field_label+'</label>';"
+        "      if(f.field_type==='text'||f.field_type==='email'||f.field_type==='phone'||f.field_type==='number'){"
+        "        html+='<input id=\"field_'+f.field_name+'\" type=\"'+f.field_type+'\" placeholder=\"'+(f.placeholder||'')+'\" '+req+'>';"
+        "      }else if(f.field_type==='date'||f.field_type==='time'){"
+        "        html+='<input id=\"field_'+f.field_name+'\" type=\"'+f.field_type+'\" '+req+'>';"
+        "      }else if(f.field_type==='textarea'){"
+        "        html+='<textarea id=\"field_'+f.field_name+'\" placeholder=\"'+(f.placeholder||'')+'\" '+req+'></textarea>';"
+        "      }else if(f.field_type==='select'){"
+        "        html+='<select id=\"field_'+f.field_name+'\" '+req+'><option value=\"\">Select...</option>';"
+        "        const opts=f.options||[];"
+        "        opts.forEach(o=>html+='<option value=\"'+o.value+'\">'+o.label+'</option>');"
+        "        const resType=f.field_name.includes('doctor')?'doctor':f.field_name.includes('stylist')?'staff':null;"
+        "        if(resType&&resources[resType]){"
+        "          resources[resType].forEach(r=>html+='<option value=\"'+r.id+'\">'+r.resource_name+'</option>');"
+        "        }"
+        "        html+='</select>';"
+        "      }else if(f.field_type==='radio'){"
+        "        html+='<div class=\"radio-group\">';"
+        "        const opts=f.options||[];"
+        "        opts.forEach(o=>{"
+        "          html+='<label class=\"radio-option\"><input type=\"radio\" name=\"field_'+f.field_name+'\" value=\"'+o.value+'\" '+req+'>'+o.label+'</label>';"
+        "        });"
+        "        html+='</div>';"
+        "      }else if(f.field_type==='checkbox'){"
+        "        html+='<div class=\"checkbox-group\"><input id=\"field_'+f.field_name+'\" type=\"checkbox\"><label>'+f.field_label+'</label></div>';"
+        "      }"
+        "      if(f.help_text)html+='<div class=\"help-text\">'+f.help_text+'</div>';"
+        "      html+='</div>';"
+        "    });"
+        "    html+='</div>';"
+        "  }"
+        "  html+='<div class=\"section\"><div class=\"section-title\">Select Date & Time</div>';"
+        "  html+='<div class=\"form-group required\"><label>Date</label><input id=\"booking_date\" type=\"date\" required></div>';"
+        "  html+='<div class=\"time-slots\" id=\"slots\"></div>';"
+        "  html+='<div class=\"slot-status\" id=\"slot-status\" style=\"display:none\"></div>';"
+        "  html+='</div>';"
+        "  html+='<div class=\"button-group\"><button id=\"submit\" type=\"button\">Book Appointment</button></div>';"
+        "  html+='<div class=\"required-fields\">* Required fields</div>';"
+        "  container.innerHTML=html;"
+        "  document.getElementById('booking_date').addEventListener('change',loadSlots);"
+        "  document.getElementById('submit').addEventListener('click',submitBooking);"
+        "  const today=new Date();document.getElementById('booking_date').value=today.toISOString().slice(0,10);loadSlots();"
+        "}"
+        
+        "function renderDefaultForm(){"
+        "  const container=document.getElementById('form-container');"
+        "  let html='<div class=\"section\">';"
+        "  html+='<div class=\"form-group required\"><label>Full Name</label><input id=\"customer_name\" type=\"text\" required></div>';"
+        "  html+='<div class=\"form-group required\"><label>Email</label><input id=\"customer_email\" type=\"email\" required></div>';"
+        "  html+='<div class=\"form-group\"><label>Phone</label><input id=\"customer_phone\" type=\"tel\"></div>';"
+        "  html+='<div class=\"form-group\"><label>Notes</label><input id=\"notes\" type=\"text\"></div>';"
+        "  html+='</div>';"
+        "  html+='<div class=\"section\"><div class=\"form-group required\"><label>Date</label><input id=\"booking_date\" type=\"date\" required></div>';"
+        "  html+='<div class=\"time-slots\" id=\"slots\"></div><div class=\"slot-status\" id=\"slot-status\" style=\"display:none\"></div></div>';"
+        "  html+='<div class=\"button-group\"><button id=\"submit\" type=\"button\">Book Appointment</button></div>';"
+        "  container.innerHTML=html;"
+        "  document.getElementById('booking_date').addEventListener('change',loadSlots);"
+        "  document.getElementById('submit').addEventListener('click',submitBooking);"
+        "  const today=new Date();document.getElementById('booking_date').value=today.toISOString().slice(0,10);loadSlots();"
+        "}"
+        
+        # Load available time slots
+        "async function loadSlots(){"
+        "  const dt=document.getElementById('booking_date').value;if(!dt)return;"
+        "  const h={};if(BOT_KEY)h['X-Bot-Key']=BOT_KEY;"
+        "  const el=document.getElementById('slots'),st=document.getElementById('slot-status');"
+        "  el.innerHTML='';st.innerHTML='<span class=\"loading-spinner\"></span> Loading...';st.style.display='block';"
+        "  const url=API+'/api/bots/'+BOT+'/available-slots?booking_date='+dt;"
+        "  try{"
+        "    const r=await fetch(url,{headers:h});"
+        "    if(!r.ok){st.textContent='Error loading slots';return;}"
+        "    const d=await r.json();const slots=d.slots||[];"
+        "    if(slots.length===0){st.textContent='No available slots for this date';return;}"
+        "    st.style.display='none';"
+        "    slots.forEach(s=>{"
+        "      const b=document.createElement('button');b.type='button';b.className='time-slot';"
+        "      const [h,m]=s.start_time.split(':');"
+        "      const hNum=parseInt(h,10);const ampm=hNum>=12?'PM':'AM';const h12=hNum%12||12;"
+        "      b.textContent=h12+':'+(m||'00')+' '+ampm;"
+        "      if(s.available_capacity){b.setAttribute('data-capacity',s.available_capacity);}"
+        "      b.onclick=()=>{"
+        "        chosen={start:dt+'T'+s.start_time,end:dt+'T'+s.end_time};"
+        "        document.querySelectorAll('.time-slot').forEach(x=>x.classList.remove('selected'));"
+        "        b.classList.add('selected');"
+        "      };"
+        "      el.appendChild(b);"
+        "    });"
+        "  }catch(e){console.error(e);st.textContent='Error: '+e.message;}"
+        "}"
+        
+        # Submit booking with dynamic form data
+        "async function submitBooking(){"
+        "  const name=document.getElementById('customer_name').value.trim();"
+        "  const email=document.getElementById('customer_email').value.trim();"
+        "  const phone=(document.getElementById('customer_phone')||{}).value||'';"
+        "  const date=document.getElementById('booking_date').value;"
+        "  if(!name||!email||!date){showMsg('Please fill required fields','error');return;}"
+        "  if(!chosen){showMsg('Please select a time slot','error');return;}"
+        "  const formData={};"
+        "  formFields.forEach(f=>{"
+        "    const el=document.getElementById('field_'+f.field_name)||document.querySelector('input[name=\"field_'+f.field_name+'\"]:checked');"
+        "    if(el){formData[f.field_name]=el.type==='checkbox'?el.checked:(el.value||'');}"
+        "  });"
+        "  const resourceId=(formData.doctor||formData.stylist||formData.consultant||formData.tutor||null);"
+        "  const startTime=new Date(chosen.start).toTimeString().slice(0,8);"
+        "  const endTime=new Date(chosen.end).toTimeString().slice(0,8);"
+        "  const payload={org_id:ORG,bot_id:BOT,customer_name:name,customer_email:email,customer_phone:phone,booking_date:date,start_time:startTime,end_time:endTime,resource_id:resourceId,form_data:formData};"
+        "  const h={'Content-Type':'application/json'};if(BOT_KEY)h['X-Bot-Key']=BOT_KEY;"
+        "  const btn=document.getElementById('submit');btn.disabled=true;btn.textContent='Booking...';"
+        "  try{"
+        "    const r=await fetch(API+'/api/bookings',{method:'POST',headers:h,body:JSON.stringify(payload)});"
+        "    if(!r.ok){const d=await r.json().catch(()=>({}));showMsg('Error: '+(d.detail||r.status),'error');btn.disabled=false;btn.textContent='Book Appointment';return;}"
+        "    const d=await r.json();"
+        "    const calStatus=d.calendar_synced?' ✓ Added to Calendar':' (Calendar sync pending)';"
+        "    showMsg('✓ Booking Confirmed!\\nBooking ID: '+d.id+calStatus,'success');btn.textContent='Success';"
+        "    const startDisplay=date+' '+startTime;"
+        "    const endDisplay=date+' '+endTime;"
+        "    const confirmMsg='Booked your appointment for '+name+' on '+date+' at '+startTime+'. Booking ID: '+d.id+(d.calendar_synced?' ✓ Added to Google Calendar':'');"
+        "    if(window.parent&&window.parent.postMessage){window.parent.postMessage({type:'BOOKING_SUCCESS',id:d.id,start:startDisplay,end:endDisplay,message:confirmMsg,calendarSynced:d.calendar_synced},'*');}"
+        "    setTimeout(()=>window.close(),2000);"
+        "  }catch(e){console.error(e);showMsg('Request failed','error');btn.disabled=false;btn.textContent='Book Appointment';}"
+        "}"
+        
+        "loadFormConfig();"
         "</script>"
         "</body></html>"
     )
@@ -3022,63 +3220,80 @@ def booking_book(bot_id: str, body: BookingRequestBody, authorization: Optional[
     _require_auth(authorization, body.org_id)
     _rate_limit(bot_id, body.org_id)
     from app.db import get_conn, normalize_org_id
+    from datetime import datetime
     conn = get_conn()
     try:
         _ensure_oauth_table(conn)
         _ensure_booking_settings_table(conn)
-        _ensure_appointments_table(conn)
+        
         with conn.cursor() as cur:
+            # Get calendar OAuth config
             cur.execute(
-                "select calendar_id, access_token_enc, refresh_token_enc from bot_calendar_oauth where (org_id=%s or org_id::text=%s) and bot_id=%s and provider=%s",
-                (normalize_org_id(body.org_id), body.org_id, bot_id, "google"),
+                "select calendar_id, access_token_enc, refresh_token_enc from bot_calendar_oauth where bot_id=%s and provider=%s",
+                (bot_id, "google"),
             )
             row = cur.fetchone()
             if not row:
                 raise HTTPException(status_code=400, detail="calendar not connected")
             cal_id, at_enc, rt_enc = row
+            
         at = __import__("app.services.calendar_google", fromlist=["_decrypt"])._decrypt(at_enc) if at_enc else None
         rt = __import__("app.services.calendar_google", fromlist=["_decrypt"])._decrypt(rt_enc) if rt_enc else None
         svc = __import__("app.services.calendar_google", fromlist=["build_service_from_tokens"]).build_service_from_tokens(at or "", rt, None)
         if not svc:
             raise HTTPException(status_code=500, detail="calendar service error")
+        
         try:
             c2 = psycopg.connect(settings.SUPABASE_DB_DSN, autocommit=False)
         except Exception:
             c2 = conn
         try:
             with c2.cursor() as cur2:
+                # Parse start and end times
+                start_dt = datetime.fromisoformat(body.start_iso.replace('Z', '+00:00'))
+                end_dt = datetime.fromisoformat(body.end_iso.replace('Z', '+00:00'))
+                
+                # Extract date and time components
+                booking_date = start_dt.date()
+                start_time = start_dt.time()
+                end_time = end_dt.time()
+                
+                # Get customer info from attendees
+                customer_name = body.summary.replace("Appointment: ", "") if body.summary else "Test User"
+                customer_email = body.attendees[0] if body.attendees and len(body.attendees) > 0 else None
+                
+                # Insert into bookings table
                 cur2.execute(
                     """
-                    insert into bot_appointments (org_id, bot_id, summary, start_iso, end_iso, attendees_json, status)
-                    values (%s,%s,%s,%s,%s,%s,%s)
+                    insert into bookings (bot_id, form_config_id, customer_name, customer_email, booking_date, start_time, end_time, status)
+                    values (%s, (select id from form_configurations where bot_id = %s limit 1), %s, %s, %s, %s, %s, %s)
                     returning id
                     """,
-                    (
-                        normalize_org_id(body.org_id),
-                        bot_id,
-                        body.summary,
-                        body.start_iso,
-                        body.end_iso,
-                        None if body.attendees is None else __import__("json").dumps(body.attendees),
-                        "scheduled",
-                    ),
+                    (bot_id, bot_id, customer_name, customer_email, booking_date, start_time, end_time, "booked"),
                 )
                 rid = int(cur2.fetchone()[0])
-                ext_id = __import__("app.services.calendar_google", fromlist=["create_event_oauth"]).create_event_oauth(svc, cal_id or "primary", body.summary, body.start_iso, body.end_iso, body.attendees, None)
+                
+                # Create Google Calendar event
+                ext_id = __import__("app.services.calendar_google", fromlist=["create_event_oauth"]).create_event_oauth(
+                    svc, cal_id or "primary", body.summary, body.start_iso, body.end_iso, body.attendees if body.attendees else None, None
+                )
                 if not ext_id:
                     raise Exception("calendar create failed")
-                cur2.execute("update bot_appointments set external_event_id=%s, updated_at=now() where id=%s", (ext_id, rid))
+                
+                # Update booking with external event ID
+                cur2.execute("update bookings set external_event_id=%s where id=%s", (ext_id, rid))
+            
             try:
                 c2.commit()
             except Exception:
                 pass
             return {"scheduled": True, "appointment_id": rid, "external_event_id": ext_id}
-        except Exception:
+        except Exception as e:
             try:
                 c2.rollback()
             except Exception:
                 pass
-            raise HTTPException(status_code=500, detail="booking failed")
+            raise HTTPException(status_code=500, detail=f"booking failed: {str(e)}")
         finally:
             try:
                 if c2 is not conn:
@@ -3100,20 +3315,30 @@ def booking_cancel(bot_id: str, body: CancelBody, authorization: Optional[str] =
     try:
         _ensure_oauth_table(conn)
         with conn.cursor() as cur:
-            cur.execute("select external_event_id from bot_appointments where id=%s and (org_id=%s or org_id::text=%s) and bot_id=%s", (body.appointment_id, normalize_org_id(body.org_id), body.org_id, bot_id))
+            # Get booking from bookings table
+            cur.execute("select external_event_id from bookings where id=%s and bot_id=%s", (body.appointment_id, bot_id))
             row = cur.fetchone()
             if not row:
-                raise HTTPException(status_code=404, detail="appointment not found")
+                raise HTTPException(status_code=404, detail="booking not found")
             ext_id = row[0]
-            cur.execute("select calendar_id, access_token_enc, refresh_token_enc from bot_calendar_oauth where (org_id=%s or org_id::text=%s) and bot_id=%s and provider=%s", (normalize_org_id(body.org_id), body.org_id, bot_id, "google"))
+            
+            # Get calendar OAuth config
+            cur.execute("select calendar_id, access_token_enc, refresh_token_enc from bot_calendar_oauth where bot_id=%s and provider=%s", (bot_id, "google"))
             cr = cur.fetchone()
-        from app.services.calendar_google import _decrypt, build_service_from_tokens, delete_event_oauth
-        at = _decrypt(cr[1]) if cr and cr[1] else None
-        rt = _decrypt(cr[2]) if cr and cr[2] else None
-        svc = build_service_from_tokens(at or "", rt, None)
-        ok = delete_event_oauth(svc, (cr[0] or "primary"), ext_id) if (svc and ext_id) else True
-        with conn.cursor() as cur:
-            cur.execute("update bot_appointments set status='cancelled', updated_at=now() where id=%s", (body.appointment_id,))
+            
+            # Delete from Google Calendar if event exists
+            if ext_id and cr:
+                from app.services.calendar_google import _decrypt, build_service_from_tokens, delete_event_oauth
+                at = _decrypt(cr[1]) if cr[1] else None
+                rt = _decrypt(cr[2]) if cr[2] else None
+                svc = build_service_from_tokens(at or "", rt, None)
+                if svc:
+                    delete_event_oauth(svc, (cr[0] or "primary"), ext_id)
+            
+            # Update booking status
+            cur.execute("update bookings set status='cancelled' where id=%s", (body.appointment_id,))
+            conn.commit()
+                
         return {"cancelled": True}
     finally:
         conn.close()
@@ -3136,11 +3361,29 @@ def booking_list(bot_id: str, org_id: str, authorization: Optional[str] = Header
     conn = get_conn()
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                "select id, summary, start_iso, end_iso, external_event_id, status, attendees_json from bot_appointments where (org_id=%s or org_id::text=%s) and bot_id=%s order by created_at desc",
-                (normalize_org_id(org_id), org_id, bot_id),
-            )
-            rows = cur.fetchall()
+            # Get bookings from bookings table (dynamic forms system)
+            cur.execute("""
+                select b.id, b.customer_name, b.booking_date, b.start_time, b.end_time, 
+                       b.status, b.customer_email, b.customer_phone, b.notes, b.form_data,
+                       b.external_event_id, r.resource_name
+                from bookings b
+                left join booking_resources r on b.resource_id = r.id
+                where b.bot_id = %s
+                order by b.created_at desc
+            """, (bot_id,))
+            bookings = cur.fetchall()
+            
+            # Convert bookings to response format
+            rows = []
+            for db in bookings:
+                booking_id, cust_name, booking_date, start_time, end_time, status, email, phone, notes, form_data, ext_event_id, resource_name = db
+                summary = f"Appointment: {cust_name}"
+                if resource_name:
+                    summary += f" with {resource_name}"
+                start_iso = f"{booking_date}T{start_time}"
+                end_iso = f"{booking_date}T{end_time}"
+                attendees_json = {"name": cust_name, "email": email, "phone": phone, "notes": notes, "form_data": form_data}
+                rows.append((booking_id, summary, start_iso, end_iso, ext_event_id, status, attendees_json))
             cur.execute(
                 "select calendar_id, access_token_enc, refresh_token_enc, token_expiry from bot_calendar_oauth where (org_id=%s or org_id::text=%s) and bot_id=%s and provider=%s",
                 (normalize_org_id(org_id), org_id, bot_id, "google"),
@@ -3194,13 +3437,20 @@ def booking_list(bot_id: str, org_id: str, authorization: Optional[str] = Header
         appts = []
         for r in rows:
             info = _parse_attendees(r[6])
-            need_fetch = svc and (not info.get("name") or not info.get("email") or not info.get("phone") or not info.get("notes")) and r[4]
-            if need_fetch:
+            
+            # Fetch full event details from Google Calendar to get description with form data
+            event_description = None
+            if svc and r[4]:  # if we have a service and external_event_id
                 try:
-                    ev = get_event_oauth(svc, cal_id or "primary", r[4]) if svc else None
-                except Exception:
-                    ev = None
-                info = _merge_with_desc(info, ev)
+                    from app.services.calendar_google import get_event_oauth
+                    ev = get_event_oauth(svc, cal_id or "primary", r[4])
+                    if ev:
+                        event_description = ev.get("description", "")
+                        # Also merge basic info from description if needed
+                        info = _merge_with_desc(info, ev)
+                except Exception as e:
+                    print(f"Could not fetch event {r[4]}: {str(e)}")
+            
             appts.append({
                 "id": int(r[0]),
                 "summary": r[1],
@@ -3208,7 +3458,13 @@ def booking_list(bot_id: str, org_id: str, authorization: Optional[str] = Header
                 "end_iso": r[3],
                 "external_event_id": r[4],
                 "status": r[5],
-                **_flatten(info),
+                "name": info.get("name"),
+                "email": info.get("email"),
+                "phone": info.get("phone"),
+                "notes": info.get("notes"),
+                "form_data": info.get("form_data"),
+                "event_description": event_description,
+                "info": info,
             })
         return {"appointments": appts}
     finally:
