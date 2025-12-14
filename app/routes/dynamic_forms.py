@@ -375,7 +375,7 @@ def get_resources(bot_id: str, resource_type: Optional[str] = None, active_only:
             
             cur.execute(f"""
                 select id, org_id, bot_id, resource_type, resource_name, resource_code,
-                       description, capacity_per_slot, metadata, is_active, created_at
+                       department, description, capacity_per_slot, metadata, is_active, created_at
                 from booking_resources
                 where {' and '.join(where_clauses)}
                 order by resource_name
@@ -390,11 +390,12 @@ def get_resources(bot_id: str, resource_type: Optional[str] = None, active_only:
                     "resource_type": row[3],
                     "resource_name": row[4],
                     "resource_code": row[5],
-                    "description": row[6],
-                    "capacity_per_slot": row[7],
-                    "metadata": row[8],
-                    "is_active": row[9],
-                    "created_at": row[10].isoformat()
+                    "department": row[6],
+                    "description": row[7],
+                    "capacity_per_slot": row[8],
+                    "metadata": row[9],
+                    "is_active": row[10],
+                    "created_at": row[11].isoformat()
                 })
             return {"resources": resources}
     finally:
@@ -440,6 +441,36 @@ def update_resource(resource_id: str, update: BookingResourceUpdate):
         raise HTTPException(status_code=400, detail=str(e))
     finally:
         conn.close()
+ 
+@router.delete("/resources/{resource_id}")
+def delete_resource(resource_id: str, hard_delete: bool = False):
+    """Delete a resource. Soft delete by default (sets is_active=false)."""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            # Remove schedules for the resource
+            cur.execute("delete from resource_schedules where resource_id = %s", (resource_id,))
+            if hard_delete:
+                cur.execute("delete from booking_resources where id = %s returning id", (resource_id,))
+            else:
+                cur.execute("""
+                    update booking_resources
+                    set is_active = false, updated_at = now()
+                    where id = %s
+                    returning id
+                """, (resource_id,))
+            result = cur.fetchone()
+            if not result:
+                raise HTTPException(status_code=404, detail="Resource not found")
+            conn.commit()
+            return {"success": True, "id": str(result[0])}
+    except HTTPException:
+        raise
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        conn.close()
 
 # ============ Resource Schedules Endpoints ============
 
@@ -466,6 +497,51 @@ def create_resource_schedule(resource_id: str, schedule: ResourceScheduleCreate)
                 "created_at": result[1].isoformat(),
                 **schedule.model_dump()
             }
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        conn.close()
+
+@router.get("/resources/{resource_id}/schedules")
+def list_resource_schedules(resource_id: str):
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                select id, day_of_week, specific_date, start_time, end_time, slot_duration_minutes, is_available, metadata, created_at
+                from resource_schedules
+                where resource_id = %s
+                order by specific_date nulls last, day_of_week, start_time
+            """, (resource_id,))
+            items = []
+            for row in cur.fetchall():
+                items.append({
+                    "id": str(row[0]),
+                    "day_of_week": row[1],
+                    "specific_date": row[2].isoformat() if row[2] else None,
+                    "start_time": str(row[3]),
+                    "end_time": str(row[4]),
+                    "slot_duration_minutes": row[5],
+                    "is_available": row[6],
+                    "metadata": row[7],
+                    "created_at": row[8].isoformat() if row[8] else None
+                })
+            return {"schedules": items}
+    finally:
+        conn.close()
+
+@router.delete("/schedules/{schedule_id}")
+def delete_schedule(schedule_id: str):
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("delete from resource_schedules where id = %s returning id", (schedule_id,))
+            result = cur.fetchone()
+            if not result:
+                raise HTTPException(status_code=404, detail="Schedule not found")
+            conn.commit()
+            return {"success": True, "id": str(result[0])}
     except Exception as e:
         conn.rollback()
         raise HTTPException(status_code=400, detail=str(e))

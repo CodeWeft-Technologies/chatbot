@@ -298,6 +298,7 @@ def _init_schema():
                       resource_type text not null,
                       resource_name text not null,
                       resource_code text,
+                      department text,
                       description text,
                       capacity_per_slot int not null default 1,
                       metadata jsonb,
@@ -307,6 +308,10 @@ def _init_schema():
                     )
                     """
                 )
+                try:
+                    cur.execute("alter table booking_resources add column if not exists department text")
+                except Exception:
+                    pass
                 
                 # Resource schedules
                 cur.execute(

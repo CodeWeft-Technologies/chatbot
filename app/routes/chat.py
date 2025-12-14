@@ -912,12 +912,40 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
                     _ensure_oauth_table(conn)
                     _ensure_booking_settings_table(conn)
                     _ensure_audit_logs_table(conn)
+                    
+                    # Debug logging
+                    print(f"[DEBUG] Looking for appointment ID: {ap_id}")
+                    print(f"[DEBUG] org_id (raw): {body.org_id}")
+                    print(f"[DEBUG] org_id (normalized): {normalize_org_id(body.org_id)}")
+                    print(f"[DEBUG] bot_id: {bot_id}")
+                    
                     with conn.cursor() as cur:
+                        # Check both bot_appointments and bookings tables
+                        # First try bot_appointments (chat-created appointments)
                         cur.execute(
-                            "select external_event_id, start_iso, end_iso, status from bot_appointments where id=%s and (org_id=%s or org_id::text=%s) and bot_id=%s",
+                            "select external_event_id, start_iso, end_iso, status, 'bot_appointments' as source from bot_appointments where id=%s and (org_id=%s or org_id::text=%s) and bot_id=%s",
                             (ap_id, normalize_org_id(body.org_id), body.org_id, bot_id),
                         )
                         row = cur.fetchone()
+                        
+                        # If not found, try bookings table (form-created bookings)
+                        if not row:
+                            print(f"[DEBUG] Not in bot_appointments, checking bookings table...")
+                            cur.execute(
+                                """
+                                select calendar_event_id, 
+                                       (booking_date::text || 'T' || start_time::text) as start_iso,
+                                       (booking_date::text || 'T' || end_time::text) as end_iso,
+                                       status,
+                                       'bookings' as source
+                                from bookings 
+                                where id=%s and (org_id=%s or org_id::text=%s) and bot_id=%s
+                                """,
+                                (ap_id, normalize_org_id(body.org_id), body.org_id, bot_id),
+                            )
+                            row = cur.fetchone()
+                            if row:
+                                print(f"[DEBUG] Found in bookings table!")
                     if not row:
                         _ensure_usage_table(conn)
                         _log_chat_usage(conn, body.org_id, bot_id, 0.0, True)
@@ -1140,16 +1168,31 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
                                 _log_chat_usage(conn, body.org_id, bot_id, 0.0, True)
                                 return {"answer": "Calendar booking failed. Please try again after reconnecting Google Calendar. Or use the [booking form](" + form_url + ")", "citations": [], "similarity": 0.0}
                             _ensure_appointments_table(conn)
-                            with conn.cursor() as cur:
-                                cur.execute(
-                                    """
-                                    insert into bot_appointments (org_id, bot_id, summary, start_iso, end_iso, attendees_json, status, external_event_id)
-                                    values (%s,%s,%s,%s,%s,%s,%s,%s)
-                                    returning id
-                                    """,
-                                    (normalize_org_id(body.org_id), bot_id, "Appointment", si, ei, None if not info else __import__("json").dumps(info), "scheduled", ext_id),
-                                )
-                                apid = int(cur.fetchone()[0])
+                            
+                            # Debug logging
+                            print(f"[DEBUG] Creating appointment:")
+                            print(f"[DEBUG] org_id (raw): {body.org_id}")
+                            print(f"[DEBUG] org_id (normalized): {normalize_org_id(body.org_id)}")
+                            print(f"[DEBUG] bot_id: {bot_id}")
+                            print(f"[DEBUG] start_iso: {si}, end_iso: {ei}")
+                            
+                            try:
+                                with conn.cursor() as cur:
+                                    cur.execute(
+                                        """
+                                        insert into bot_appointments (org_id, bot_id, summary, start_iso, end_iso, attendees_json, status, external_event_id)
+                                        values (%s,%s,%s,%s,%s,%s,%s,%s)
+                                        returning id
+                                        """,
+                                        (normalize_org_id(body.org_id), bot_id, "Appointment", si, ei, None if not info else __import__("json").dumps(info), "scheduled", ext_id),
+                                    )
+                                    apid = int(cur.fetchone()[0])
+                                    print(f"[DEBUG] Created appointment with ID: {apid}")
+                            except Exception as e:
+                                print(f"[DEBUG] ERROR creating appointment: {e}")
+                                import traceback
+                                traceback.print_exc()
+                                raise
                             try:
                                 from app.services.calendar_google import update_event_oauth
                                 desc = f"Appointment ID: {apid}\nName: {info.get('name') or ''}\nEmail: {info.get('email') or ''}\nPhone: {info.get('phone') or ''}\nNotes: {info.get('notes') or ''}"
@@ -1558,12 +1601,40 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
                     _ensure_oauth_table(conn)
                     _ensure_booking_settings_table(conn)
                     _ensure_audit_logs_table(conn)
+                    
+                    # Debug logging for streaming endpoint
+                    print(f"[STREAM DEBUG] Looking for appointment ID: {ap_id}")
+                    print(f"[STREAM DEBUG] org_id (raw): {body.org_id}")
+                    print(f"[STREAM DEBUG] org_id (normalized): {normalize_org_id(body.org_id)}")
+                    print(f"[STREAM DEBUG] bot_id: {bot_id}")
+                    
                     with conn.cursor() as cur:
+                        # Check both bot_appointments and bookings tables
+                        # First try bot_appointments (chat-created appointments)
                         cur.execute(
-                            "select external_event_id, start_iso, end_iso, status from bot_appointments where id=%s and (org_id=%s or org_id::text=%s) and bot_id=%s",
+                            "select external_event_id, start_iso, end_iso, status, 'bot_appointments' as source from bot_appointments where id=%s and (org_id=%s or org_id::text=%s) and bot_id=%s",
                             (ap_id, normalize_org_id(body.org_id), body.org_id, bot_id),
                         )
                         row = cur.fetchone()
+                        
+                        # If not found, try bookings table (form-created bookings)
+                        if not row:
+                            print(f"[STREAM DEBUG] Not in bot_appointments, checking bookings table...")
+                            cur.execute(
+                                """
+                                select calendar_event_id, 
+                                       (booking_date::text || 'T' || start_time::text) as start_iso,
+                                       (booking_date::text || 'T' || end_time::text) as end_iso,
+                                       status,
+                                       'bookings' as source
+                                from bookings 
+                                where id=%s and (org_id=%s or org_id::text=%s) and bot_id=%s
+                                """,
+                                (ap_id, normalize_org_id(body.org_id), body.org_id, bot_id),
+                            )
+                            row = cur.fetchone()
+                            if row:
+                                print(f"[STREAM DEBUG] Found in bookings table!")
                     if not row:
                         _ensure_usage_table(conn)
                         _log_chat_usage(conn, body.org_id, bot_id, 0.0, True)
@@ -1800,14 +1871,33 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
                 _ensure_usage_table(conn)
                 _log_chat_usage(conn, body.org_id, bot_id, 0.0, True)
                 return StreamingResponse(gen_fail(), media_type="text/event-stream")
+            
+            # Ensure the appointments table exists before inserting
+            _ensure_appointments_table(conn)
+            
             apid = None
-            with conn.cursor() as cur:
-                cur.execute(
-                    "insert into bot_appointments (org_id, bot_id, summary, start_iso, end_iso, attendees_json, status, external_event_id) values (%s,%s,%s,%s,%s,%s,%s,%s) returning id",
-                    (normalize_org_id(body.org_id), bot_id, "Appointment", si, ei, (__import__("json").dumps(attns) if attns else None), "booked", ext_id),
-                )
-                r = cur.fetchone()
-                apid = int(r[0]) if r else None
+            
+            # Debug logging for appointment creation
+            print(f"[STREAM DEBUG] Creating appointment:")
+            print(f"[STREAM DEBUG] org_id (raw): {body.org_id}")
+            print(f"[STREAM DEBUG] org_id (normalized): {normalize_org_id(body.org_id)}")
+            print(f"[STREAM DEBUG] bot_id: {bot_id}")
+            print(f"[STREAM DEBUG] start_iso: {si}, end_iso: {ei}")
+            
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "insert into bot_appointments (org_id, bot_id, summary, start_iso, end_iso, attendees_json, status, external_event_id) values (%s,%s,%s,%s,%s,%s,%s,%s) returning id",
+                        (normalize_org_id(body.org_id), bot_id, "Appointment", si, ei, (__import__("json").dumps(attns) if attns else None), "booked", ext_id),
+                    )
+                    r = cur.fetchone()
+                    apid = int(r[0]) if r else None
+                    print(f"[STREAM DEBUG] Created appointment with ID: {apid}")
+            except Exception as e:
+                print(f"[STREAM DEBUG] ERROR creating appointment: {e}")
+                import traceback
+                traceback.print_exc()
+                apid = None
             _SESSION_STATE[key] = {}
             def gen_ok():
                 text = f"Booked your appointment for {si} to {ei}. ID: {apid}"
@@ -3000,6 +3090,12 @@ def booking_form(bot_id: str, org_id: str, bot_key: Optional[str] = None):
         "      if(r3.ok){"
         "        const data=await r3.json();"
         "        resources=(data.resources||[]).reduce((acc,r)=>{acc[r.resource_type]=acc[r.resource_type]||[];acc[r.resource_type].push(r);return acc;},{});"
+        "        window._resourceIndex=(data.resources||[]).reduce((m,r)=>{"
+        "          m.ids[r.id]=r;"
+        "          if(r.resource_code)m.codes[r.resource_code]=r;"
+        "          if(r.resource_name)m.names[(r.resource_name||'').toLowerCase()]=r;"
+        "          return m;"
+        "        },{ids:{},codes:{},names:{}});"
         "      }"
         "    }"
         "    renderForm();"
@@ -3076,6 +3172,7 @@ def booking_form(bot_id: str, org_id: str, bot_key: Optional[str] = None):
         "  html+='<div class=\"button-group\"><button id=\"submit\" type=\"button\">Book Appointment</button></div>';"
         "  container.innerHTML=html;"
         "  document.getElementById('booking_date').addEventListener('change',loadSlots);"
+        "  Array.from(document.querySelectorAll('select')).forEach(s=>s.addEventListener('change',loadSlots));"
         "  document.getElementById('submit').addEventListener('click',submitBooking);"
         "  const today=new Date();document.getElementById('booking_date').value=today.toISOString().slice(0,10);loadSlots();"
         "}"
@@ -3086,7 +3183,29 @@ def booking_form(bot_id: str, org_id: str, bot_key: Optional[str] = None):
         "  const h={};if(BOT_KEY)h['X-Bot-Key']=BOT_KEY;"
         "  const el=document.getElementById('slots'),st=document.getElementById('slot-status');"
         "  el.innerHTML='';st.innerHTML='<span class=\"loading-spinner\"></span> Loading...';st.style.display='block';"
-        "  const url=API+'/api/bots/'+BOT+'/available-slots?booking_date='+dt;"
+        "  let resourceId=null;"
+        "  try{"
+        "    const formData={};"
+        "    formFields.forEach(f=>{"
+        "      const el=document.getElementById('field_'+f.field_name)||document.querySelector('input[name=\"field_'+f.field_name+'\"]:checked');"
+        "      if(el){formData[f.field_name]=el.type==='checkbox'?el.checked:(el.value||'');}"
+        "    });"
+        "    resourceId=(formData.doctor||formData.stylist||formData.consultant||formData.tutor||formData.service||formData.resource||null);"
+        "    if(!resourceId){"
+        "      Array.from(document.querySelectorAll('select')).forEach(s=>{"
+        "        const val=s.value;"
+        "        if(!val)return;"
+        "        if(window._resourceIndex){"
+        "          const byId=window._resourceIndex.ids[val];"
+        "          const byCode=window._resourceIndex.codes[val];"
+        "          const byName=window._resourceIndex.names[(val||'').toLowerCase()];"
+        "          const picked=(byId||byCode||byName);"
+        "          if(picked)resourceId=picked.id;"
+        "        }"
+        "      });"
+        "    }"
+        "  }catch(e){}"
+        "  const url=resourceId?(API+'/api/resources/'+resourceId+'/available-slots?booking_date='+dt):(API+'/api/bots/'+BOT+'/available-slots?booking_date='+dt);"
         "  try{"
         "    const r=await fetch(url,{headers:h});"
         "    if(!r.ok){st.textContent='Error loading slots';return;}"
@@ -3122,7 +3241,13 @@ def booking_form(bot_id: str, org_id: str, bot_key: Optional[str] = None):
         "    const el=document.getElementById('field_'+f.field_name)||document.querySelector('input[name=\"field_'+f.field_name+'\"]:checked');"
         "    if(el){formData[f.field_name]=el.type==='checkbox'?el.checked:(el.value||'');}"
         "  });"
-        "  const resourceId=(formData.doctor||formData.stylist||formData.consultant||formData.tutor||null);"
+        "  let resourceId=(formData.doctor||formData.stylist||formData.consultant||formData.tutor||formData.service||formData.resource||null);"
+        "  if(window._resourceIndex&&resourceId&&!window._resourceIndex.ids[resourceId]){"
+        "    const byCode=window._resourceIndex.codes[resourceId];"
+        "    const byName=window._resourceIndex.names[(resourceId||'').toLowerCase()];"
+        "    const picked=(byCode||byName);"
+        "    if(picked)resourceId=picked.id;"
+        "  }"
         "  const startTime=new Date(chosen.start).toTimeString().slice(0,8);"
         "  const endTime=new Date(chosen.end).toTimeString().slice(0,8);"
         "  const payload={org_id:ORG,bot_id:BOT,customer_name:name,customer_email:email,customer_phone:phone,booking_date:date,start_time:startTime,end_time:endTime,resource_id:resourceId,form_data:formData};"
