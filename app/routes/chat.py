@@ -204,7 +204,7 @@ def _detect_booking_intent(message: str, history: list = None) -> dict:
     
     # Reschedule keywords
     reschedule_keywords = [
-        r'\b(reschedule|change|modify|shift|move)\b',
+        r'\b(reschedule|re[-\s]?schedule|reshedule|reschudule|rescedule|change|modify|shift|move)\b',
         r'\b(बदल|परिवर्तन|पुनर्निर्धारण|change)\b',
         r'\b(மாற்று|மாற்றம்)\b',
         r'\b(మార్చు|మార్పు)\b',
@@ -237,7 +237,7 @@ def _detect_booking_intent(message: str, history: list = None) -> dict:
         r'\d{4}-\d{2}-\d{2}',  # ISO date
         r'\d{1,2}:\d{2}',  # Time
         r'\d{1,2}\s*(am|pm|AM|PM)',  # 12hr format
-        r'\b(today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b',
+        r'\b(today|tomorrow|tomorow|tommorow|tmrw|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b',
         r'\b(आज|कल|सोमवार|मंगलवार|बुधवार|गुरुवार|शुक्रवार|शनिवार|रविवार)\b',
         r'\b(இன்று|நாளை|திங்கள்|செவ்வாய்|புதன்|வியாழன்|வெள்ளி|சனி|ஞாயிறு)\b',
         r'\b(ఈరోజు|రేపు|సోమవారం|మంగళవారం|బుధవారం|గురువారం|శుక్రవారం|శనివారం|ఆదివారం)\b',
@@ -271,6 +271,9 @@ def _detect_booking_intent(message: str, history: list = None) -> dict:
         action = 'status'
     elif is_booking:
         action = 'book'
+    # Fallback: if an appointment ID is present and a "to ..." phrase exists, treat as reschedule
+    elif bool(re.search(id_pattern, msg_lower, re.IGNORECASE)) and (" to " in msg_lower):
+        action = 'reschedule'
     
     # Check for time and ID
     has_time = any(re.search(pattern, msg_lower, re.IGNORECASE | re.UNICODE) for pattern in time_patterns)
@@ -544,7 +547,7 @@ def _detect_booking_intent(message: str, history: list = None) -> dict:
     
     # Reschedule keywords
     reschedule_keywords = {
-        'reschedule', 'change', 'modify', 'move', 'shift', 'postpone',
+        'reschedule', 're schedule', 'reshedule', 'reschudule', 'rescedule', 'change', 'modify', 'move', 'shift', 'postpone',
         'बदलना', 'परिवर्तन', 'மாற்று', 'మార్చు', 'পরিবর্তন', 'बदल', 'બદલો', 'ಬದಲಾಯಿಸಿ', 'മാറ്റുക', 'ਬਦਲੋ'
     }
     
@@ -570,7 +573,7 @@ def _detect_booking_intent(message: str, history: list = None) -> dict:
     date_patterns = [
         r'\d{4}-\d{2}-\d{2}',  # ISO format
         r'\d{1,2}[/-]\d{1,2}[/-]\d{2,4}',  # Various formats
-        r'\b(today|tomorrow|kal|आज|कल|இன்று|நாளை|ఈరోజు|రేపు|আজ|কাল|आज|उद्या|આજે|કાલે|ಇಂದು|ನಾಳೆ|ഇന്ന്|നാളെ|ਅੱਜ|ਕੱਲ)\b',
+        r'\b(today|tomorrow|tomorow|tommorow|tmrw|kal|आज|कल|இன்று|நாளை|ఈరోజు|రేపు|আজ|কাল|आज|उद्या|આજે|કાલે|ಇಂದು|ನಾಳೆ|ഇന്ന്|നാളെ|ਅੱਜ|ਕੱਲ)\b',
         r'\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b',
     ]
     
@@ -732,9 +735,13 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
             
             base = getattr(settings, 'PUBLIC_API_BASE_URL', '') or ''
             form_url = f"{base}/api/form/{bot_id}?org_id={body.org_id}" + (f"&bot_key={public_api_key}" if public_api_key else "")
+            # res_form_url = f"{base}/api/reschedule/{bot_id}?org_id={body.org_id}" + (f"&bot_key={public_api_key}" if public_api_key else "")
+            # res_form_url = f"{base}/api/reschedule/{bot_id}?org_id={body.org_id}" + (f"&bot_key={public_api_key}" if public_api_key else "")
+            # res_form_url = f"{base}/api/reschedule/{bot_id}?org_id={body.org_id}" + (f"&bot_key={public_api_key}" if public_api_key else "")
+            res_form_url = f"{base}/api/reschedule/{bot_id}?org_id={body.org_id}" + (f"&bot_key={public_api_key}" if public_api_key else "")
             
             # Handle different intents with user-friendly responses
-            if intent_result['is_booking'] and intent_result['confidence'] >= 0.4:
+            if intent_result['is_booking'] and intent_result['confidence'] >= 0.4 and not (intent_result.get('action', 'book') == 'reschedule' and intent_result.get('has_appointment_id')):
                 intent_type = intent_result.get('action', 'book')
                 # Map action to response key
                 if intent_type == 'book':
@@ -763,20 +770,20 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
                         'pt': f"Ficarei feliz em ajudá-lo a agendar uma consulta! Por favor, use nosso [formulário de agendamento]({form_url}) para ver os horários disponíveis.",
                     },
                     'reschedule': {
-                        'en': f"To reschedule your appointment, please provide your appointment ID or use the [booking form]({form_url}) to select a new time.",
-                        'hi': f"अपनी अपॉइंटमेंट को बदलने के लिए, कृपया अपनी अपॉइंटमेंट ID प्रदान करें या नया समय चुनने के लिए [बुकिंग फॉर्म]({form_url}) का उपयोग करें।",
-                        'ta': f"உங்கள் சந்திப்பை மாற்ற, உங்கள் அப்பாயின்ட்மென்ட் ID வழங்கவும் அல்லது புதிய நேரத்தைத் தேர்ந்தெடுக்க [பதிவு படிவத்தை]({form_url}) பயன்படுத்தவும்.",
-                        'te': f"మీ అపాయింట్మెంట్ను మార్చడానికి, మీ అపాయింట్మెంట్ ID అందించండి లేదా కొత్త సమయాన్ని ఎంచుకోవడానికి [బుకింగ్ ఫారమ్]({form_url}) ఉపయోగించండి.",
-                        'kn': f"ನಿಮ್ಮ ಅಪಾಯಿಂಟ್ಮೆಂಟ್ ಬದಲಾಯಿಸಲು, ನಿಮ್ಮ ಅಪಾಯಿಂಟ್ಮೆಂಟ್ ID ನೀಡಿ ಅಥವಾ ಹೊಸ ಸಮಯವನ್ನು ಆಯ್ಕೆ ಮಾಡಲು [ಬುಕಿಂಗ್ ಫಾರ್ಮ್]({form_url}) ಬಳಸಿ.",
-                        'ml': f"നിങ്ങളുടെ അപ്പോയിന്റ്മെന്റ് മാറ്റാൻ, നിങ്ങളുടെ അപ്പോയിന്റ്മെന്റ് ID നൽകുക അല്ലെങ്കിൽ പുതിയ സമയം തിരഞ്ഞെടുക്കാൻ [ബുക്കിംഗ് ഫോം]({form_url}) ഉപയോഗിക്കുക.",
-                        'bn': f"আপনার অ্যাপয়েন্টমেন্ট পরিবর্তন করতে, আপনার অ্যাপয়েন্টমেন্ট ID প্রদান করুন অথবা নতুন সময় নির্বাচন করতে [বুকিং ফর্ম]({form_url}) ব্যবহার করুন।",
-                        'mr': f"तुमची भेट बदलण्यासाठी, तुमचा अपॉइंटमेंट ID द्या किंवा नवीन वेळ निवडण्यासाठी [बुकिंग फॉर्म]({form_url}) वापरा.",
-                        'gu': f"તમારી મુલાકાત બદલવા માટે, તમારી એપોઇન્ટમેન્ટ ID આપો અથવા નવો સમય પસંદ કરવા માટે [બુકિંગ ફોર્મ]({form_url}) વાપરો.",
-                        'pa': f"ਆਪਣੀ ਮੁਲਾਕਾਤ ਬਦਲਣ ਲਈ, ਆਪਣੀ ਮੁਲਾਕਾਤ ID ਦਿਓ ਜਾਂ ਨਵਾਂ ਸਮਾਂ ਚੁਣਨ ਲਈ [ਬੁਕਿੰਗ ਫਾਰਮ]({form_url}) ਵਰਤੋਂ ਕਰੋ.",
-                        'es': f"Para reprogramar su cita, proporcione su ID de cita o use el [formulario de reserva]({form_url}) para seleccionar un nuevo horario.",
-                        'fr': f"Pour reprogrammer votre rendez-vous, veuillez fournir votre ID de rendez-vous ou utiliser le [formulaire de réservation]({form_url}).",
-                        'de': f"Um Ihren Termin zu verschieben, geben Sie bitte Ihre Termin-ID an oder nutzen Sie das [Buchungsformular]({form_url}).",
-                        'pt': f"Para remarcar sua consulta, forneça seu ID de consulta ou use o [formulário de agendamento]({form_url}).",
+                        'en': f"To reschedule your appointment, please provide your appointment ID or use the [reschedule form]({res_form_url}) to select a new time.",
+                        'hi': f"अपनी अपॉइंटमेंट को बदलने के लिए, कृपया अपनी अपॉइंटमेंट ID प्रदान करें या नया समय चुनने के लिए [रीशेड्यूल फॉर्म]({res_form_url}) का उपयोग करें।",
+                        'ta': f"உங்கள் சந்திப்பை மாற்ற, உங்கள் அப்பாயின்ட்மென்ட் ID வழங்கவும் அல்லது புதிய நேரத்தைத் தேர்ந்தெடுக்க [மறு அட்டவணை படிவம்]({res_form_url}) பயன்படுத்தவும்.",
+                        'te': f"మీ అపాయింట్మెంట్‌ను మార్చడానికి, మీ అపాయింట్మెంట్ ID అందించండి లేదా కొత్త సమయాన్ని ఎంచుకోవడానికి [రీషెడ్యూల్ ఫారమ్]({res_form_url}) ఉపయోగించండి.",
+                        'kn': f"ನಿಮ್ಮ ಅಪಾಯಿಂಟ್ಮೆಂಟ್ ಬದಲಾಯಿಸಲು, ನಿಮ್ಮ ಅಪಾಯಿಂಟ್ಮೆಂಟ್ ID ನೀಡಿ ಅಥವಾ ಹೊಸ ಸಮಯವನ್ನು ಆಯ್ಕೆ ಮಾಡಲು [ಮರುನಿಗದಿ ಫಾರ್ಮ್]({res_form_url}) ಬಳಸಿ.",
+                        'ml': f"നിങ്ങളുടെ അപ്പോയിന്റ്മെന്റ് മാറ്റാൻ, നിങ്ങളുടെ അപ്പോയിന്റ്മെന്റ് ID നൽകുക അല്ലെങ്കിൽ പുതിയ സമയം തിരഞ്ഞെടുക്കാൻ [റീഷെഡ്യൂൾ ഫോം]({res_form_url}) ഉപയോഗിക്കുക.",
+                        'bn': f"আপনার অ্যাপয়েন্টমেন্ট পরিবর্তন করতে, আপনার অ্যাপয়েন্টমেন্ট ID প্রদান করুন অথবা নতুন সময় নির্বাচন করতে [রিশিডিউল ফর্ম]({res_form_url}) ব্যবহার করুন।",
+                        'mr': f"तुमची भेट बदलण्यासाठी, तुमचा अपॉइंटमेंट ID द्या किंवा नवीन वेळ निवडण्यासाठी [रीशेड्यूल फॉर्म]({res_form_url}) वापरा.",
+                        'gu': f"તમારી મુલાકાત બદલવા માટે, તમારી એપોઇન્ટમેન્ટ ID આપો અથવા નવો સમય પસંદ કરવા માટે [રીશેડ્યૂલ ફોર્મ]({res_form_url}) વાપરો.",
+                        'pa': f"ਆਪਣੀ ਮੁਲਾਕਾਤ ਬਦਲਣ ਲਈ, ਆਪਣੀ ਮੁਲਾਕਾਤ ID ਦਿਓ ਜਾਂ ਨਵਾਂ ਸਮਾਂ ਚੁਣਨ ਲਈ [ਰੀਸ਼ਡਿਊਲ ਫਾਰਮ]({res_form_url}) ਵਰਤੋਂ ਕਰੋ.",
+                        'es': f"Para reprogramar su cita, proporcione su ID de cita o use el [formulario de reprogramación]({res_form_url}) para seleccionar un nuevo horario.",
+                        'fr': f"Pour reprogrammer votre rendez-vous, veuillez fournir votre ID de rendez-vous ou utiliser le [formulaire de replanification]({res_form_url}).",
+                        'de': f"Um Ihren Termin zu verschieben, geben Sie bitte Ihre Termin-ID an oder nutzen Sie das [Umlageformular]({res_form_url}).",
+                        'pt': f"Para remarcar sua consulta, forneça seu ID de consulta ou use o [formulário de remarcação]({res_form_url}).",
                     },
                     'cancel': {
                         'en': "I can help you cancel your appointment. Please provide your appointment ID (e.g., 'appointment 123' or 'ID: 123').",
@@ -813,6 +820,12 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
                 }
                 
                 response_text = responses.get(intent_type, {}).get(lang, responses.get(intent_type, {}).get('en', f"Please use our [booking form]({form_url}) to schedule your appointment."))
+                if intent_type == 'reschedule' and not intent_result.get('has_appointment_id'):
+                    response_text = f"Use the [reschedule form]({res_form_url}) to pick a new time or doctor/service."
+                if intent_type == 'reschedule':
+                    response_text = f"Use the [reschedule form]({res_form_url}) to pick a new time or doctor/service."
+                if intent_type == 'reschedule':
+                    response_text = f"Use the [reschedule form]({res_form_url}) to pick a new time or doctor/service."
                 
                 _ensure_usage_table(conn)
                 _log_chat_usage(conn, body.org_id, bot_id, intent_result['confidence'], False)
@@ -833,7 +846,7 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
                 from datetime import datetime, timedelta
                 now = datetime.now()
                 base_date = None
-                m = re.search(r"\b(today|tomorrow)\b", s, re.IGNORECASE)
+                m = re.search(r"\b(today|tomorrow|tomorow|tommorow|tmrw)\b", s, re.IGNORECASE)
                 if m:
                     w = m.group(1).lower()
                     base_date = now.date() if w == 'today' else (now + timedelta(days=1)).date()
@@ -982,7 +995,7 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
                         _ensure_usage_table(conn)
                         _log_chat_usage(conn, body.org_id, bot_id, 1.0, False)
                         return {"answer": f"Cancelled appointment ID: {ap_id}", "citations": [], "similarity": 1.0}
-                    if ("reschedule" in lowmsg) or ("change" in lowmsg):
+                    if ("reschedule" in lowmsg) or ("re schedule" in lowmsg) or ("change" in lowmsg) or ("reshedule" in lowmsg) or ("reschudule" in lowmsg) or ("rescedule" in lowmsg) or (" to " in lowmsg):
                         si_ei = None
                         m = re.search(r"\bto\b(.+)$", msg, re.IGNORECASE)
                         if m:
@@ -1482,9 +1495,10 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
             
             base = getattr(settings, 'PUBLIC_API_BASE_URL', '') or ''
             form_url = f"{base}/api/form/{bot_id}?org_id={body.org_id}" + (f"&bot_key={public_api_key}" if public_api_key else "")
+            res_form_url = f"{base}/api/reschedule/{bot_id}?org_id={body.org_id}" + (f"&bot_key={public_api_key}" if public_api_key else "")
             
             # Handle different intents with user-friendly responses
-            if intent_result['is_booking'] and intent_result['confidence'] >= 0.4:
+            if intent_result['is_booking'] and intent_result['confidence'] >= 0.4 and not (intent_result.get('action', 'book') == 'reschedule' and intent_result.get('has_appointment_id')):
                 intent_type = intent_result.get('action', 'book')
                 # Map action to response key
                 if intent_type == 'book':
@@ -1509,16 +1523,16 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
                         'pa': f"ਤੁਹਾਡੀ ਮੁਲਾਕਾਤ ਬੁੱਕ ਕਰਨ ਵਿੱਚ ਮਦਦ ਕਰਕੇ ਮੈਨੂੰ ਖੁਸ਼ੀ ਹੋਵੇਗੀ! ਉਪਲਬਧ ਸਮਾਂ ਸਲਾਟ ਦੇਖਣ ਲਈ ਸਾਡੇ [ਬੁਕਿੰਗ ਫਾਰਮ]({form_url}) ਦੀ ਵਰਤੋਂ ਕਰੋ.",
                     },
                     'reschedule': {
-                        'en': f"To reschedule your appointment, please provide your appointment ID or use the [booking form]({form_url}) to select a new time.",
-                        'hi': f"अपनी अपॉइंटमेंट को बदलने के लिए, कृपया अपनी अपॉइंटमेंट ID प्रदान करें या नया समय चुनने के लिए [बुकिंग फॉर्म]({form_url}) का उपयोग करें।",
-                        'ta': f"உங்கள் சந்திப்பை மாற்ற, உங்கள் அப்பாயின்ட்மென்ட் ID வழங்கவும் அல்லது புதிய நேரத்தைத் தேர்ந்தெடுக்க [பதிவு படிவத்தை]({form_url}) பயன்படுத்தவும்.",
-                        'te': f"మీ అపాయింట్మెంట్ను మార్చడానికి, మీ అపాయింట్మెంట్ ID అందించండి లేదా కొత్త సమయాన్ని ఎంచుకోవడానికి [బుకింగ్ ఫారమ్]({form_url}) ఉపయోగించండి.",
-                        'kn': f"ನಿಮ್ಮ ಅಪಾಯಿಂಟ್ಮೆಂಟ್ ಬದಲಾಯಿಸಲು, ನಿಮ್ಮ ಅಪಾಯಿಂಟ್ಮೆಂಟ್ ID ನೀಡಿ ಅಥವಾ ಹೊಸ ಸಮಯವನ್ನು ಆಯ್ಕೆ ಮಾಡಲು [ಬುಕಿಂಗ್ ಫಾರ್ಮ್]({form_url}) ಬಳಸಿ.",
-                        'ml': f"നിങ്ങളുടെ അപ്പോയിന്റ്മെന്റ് മാറ്റാൻ, നിങ്ങളുടെ അപ്പോയിന്റ്മെന്റ് ID നൽകുക അല്ലെങ്കിൽ പുതിയ സമയം തിരഞ്ഞെടുക്കാൻ [ബുക്കിംഗ് ഫോം]({form_url}) ഉപയോഗിക്കുക.",
-                        'bn': f"আপনার অ্যাপয়েন্টমেন্ট পরিবর্তন করতে, আপনার অ্যাপয়েন্টমেন্ট ID প্রদান করুন অথবা নতুন সময় নির্বাচন করতে [বুকিং ফর্ম]({form_url}) ব্যবহার করুন।",
-                        'mr': f"तुमची भेट बदलण्यासाठी, तुमचा अपॉइंटमेंट ID द्या किंवा नवीन वेळ निवडण्यासाठी [बुकिंग फॉर्म]({form_url}) वापरा.",
-                        'gu': f"તમારી મુલાકાત બદલવા માટે, તમારી એપોઇન્ટમેન્ટ ID આપો અથવા નવો સમય પસંદ કરવા માટે [બુકિંગ ફોર્મ]({form_url}) વાપરો.",
-                        'pa': f"ਆਪਣੀ ਮੁਲਾਕਾਤ ਬਦਲਣ ਲਈ, ਆਪਣੀ ਮੁਲਾਕਾਤ ID ਦਿਓ ਜਾਂ ਨਵਾਂ ਸਮਾਂ ਚੁਣਨ ਲਈ [ਬੁਕਿੰਗ ਫਾਰਮ]({form_url}) ਵਰਤੋਂ ਕਰੋ.",
+                        'en': f"To reschedule your appointment, please provide your appointment ID or use the [reschedule form]({res_form_url}) to select a new time.",
+                        'hi': f"अपनी अपॉइंटमेंट को बदलने के लिए, कृपया अपनी अपॉइंटमेंट ID प्रदान करें या नया समय चुनने के लिए [रीशेड्यूल फॉर्म]({res_form_url}) का उपयोग करें।",
+                        'ta': f"உங்கள் சந்திப்பை மாற்ற, உங்கள் அப்பாயின்ட்மென்ட் ID வழங்கவும் அல்லது புதிய நேரத்தைத் தேர்ந்தெடுக்க [மறு அட்டவணை படிவம்]({res_form_url}) பயன்படுத்தவும்.",
+                        'te': f"మీ అపాయింట్మెంట్‌ను మార్చడానికి, మీ అపాయింట్మెంట్ ID ఇవ్వండి లేదా కొత్త సమయాన్ని ఎంచుకోవడానికి [రీషెడ్యూల్ ఫారమ్]({res_form_url}) ఉపయోగించండి.",
+                        'kn': f"ನಿಮ್ಮ ಅಪಾಯಿಂಟ್ಮೆಂಟ್ ಬದಲಾಯಿಸಲು, ನಿಮ್ಮ ಅಪಾಯಿಂಟ್ಮೆಂಟ್ ID ನೀಡಿ ಅಥವಾ ಹೊಸ ಸಮಯವನ್ನು ಆಯ್ಕೆ ಮಾಡಲು [ಮರುನಿಗದಿ ಫಾರ್ಮ್]({res_form_url}) ಬಳಸಿ.",
+                        'ml': f"നിങ്ങളുടെ അപ്പോയിന്റ്മെന്റ് മാറ്റാൻ, നിങ്ങളുടെ അപ്പോയിന്റ്മെന്റ് ID നൽകുക അല്ലെങ്കിൽ പുതിയ സമയം തിരഞ്ഞെടുക്കാൻ [റീഷെഡ്യൂൾ ഫോം]({res_form_url}) ഉപയോഗിക്കുക.",
+                        'bn': f"আপনার অ্যাপয়েন্টমেন্ট পরিবর্তন করতে, আপনার অ্যাপয়েন্টমেন্ট ID প্রদান করুন অথবা নতুন সময় নির্বাচন করতে [রিশিডিউল ফর্ম]({res_form_url}) ব্যবহার করুন।",
+                        'mr': f"तुमची भेट बदलण्यासाठी, तुमचा अपॉइंटमेंट ID द्या किंवा नवीन वेळ निवडण्यासाठी [रीशेड्यूल फॉर्म]({res_form_url}) वापरा.",
+                        'gu': f"તમારી મુલાકાત બદલવા માટે, તમારી એપોઇન્ટમેન્ટ ID આપો અથવા નવો સમય પસંદ કરવા માટે [રીશેડ્યૂલ ફોર્મ]({res_form_url}) વાપરો.",
+                        'pa': f"ਆਪਣੀ ਮੁਲਾਕਾਤ ਬਦਲਣ ਲਈ, ਆਪਣੀ ਮੁਲਾਕਾਤ ID ਦਿਓ ਜਾਂ ਨਵਾਂ ਸਮਾਂ ਚੁਣਨ ਲਈ [ਰੀਸ਼ਡਿਊਲ ਫਾਰਮ]({res_form_url}) ਵਰਤੋਂ ਕਰੋ.",
                     }
                 }
                 
@@ -3155,6 +3169,7 @@ def booking_form(bot_id: str, org_id: str, bot_key: Optional[str] = None):
         "  html+='<div class=\"required-fields\">* Required fields</div>';"
         "  container.innerHTML=html;"
         "  document.getElementById('booking_date').addEventListener('change',loadSlots);"
+        "  Array.from(document.querySelectorAll('select')).forEach(s=>s.addEventListener('change',loadSlots));"
         "  document.getElementById('submit').addEventListener('click',submitBooking);"
         "  const today=new Date();document.getElementById('booking_date').value=today.toISOString().slice(0,10);loadSlots();"
         "}"
@@ -3180,6 +3195,7 @@ def booking_form(bot_id: str, org_id: str, bot_key: Optional[str] = None):
         # Load available time slots
         "async function loadSlots(){"
         "  const dt=document.getElementById('booking_date').value;if(!dt)return;"
+        "  chosen=null;"
         "  const h={};if(BOT_KEY)h['X-Bot-Key']=BOT_KEY;"
         "  const el=document.getElementById('slots'),st=document.getElementById('slot-status');"
         "  el.innerHTML='';st.innerHTML='<span class=\"loading-spinner\"></span> Loading...';st.style.display='block';"
@@ -3268,6 +3284,196 @@ def booking_form(bot_id: str, org_id: str, bot_key: Optional[str] = None):
         "}"
         
         "loadFormConfig();"
+        "</script>"
+        "</body></html>"
+    )
+    return html
+
+@router.get("/reschedule/{bot_id}", response_class=HTMLResponse)
+def reschedule_form(bot_id: str, org_id: str, bot_key: Optional[str] = None):
+    base = getattr(settings, 'PUBLIC_API_BASE_URL', '') or ''
+    api_url = base.rstrip('/')
+    html = (
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>Reschedule Appointment</title>"
+        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1,maximum-scale=1\">"
+        "<style>"
+        "*{margin:0;padding:0;box-sizing:border-box}"
+        "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:linear-gradient(135deg,#22c1c3 0%,#fdbb2d 100%);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:12px}"
+        ".container{background:#fff;border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,0.3);max-width:640px;width:100%;padding:32px;max-height:90vh;overflow-y:auto}"
+        ".header{margin-bottom:28px}"
+        ".header h1{font-size:28px;font-weight:700;color:#1a1a1a;margin-bottom:8px}"
+        ".header p{font-size:14px;color:#666}"
+        ".form-group{margin-bottom:20px}"
+        ".form-group label{display:block;font-size:13px;font-weight:600;color:#333;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.5px}"
+        ".form-group input,.form-group select{width:100%;padding:12px 14px;border:2px solid #e0e0e0;border-radius:8px;font-size:14px;transition:all 0.3s ease;font-family:inherit}"
+        ".form-group input:focus,.form-group select:focus{outline:none;border-color:#22c1c3;box-shadow:0 0 0 3px rgba(34,193,195,0.15)}"
+        ".section{margin-bottom:24px;padding-bottom:24px;border-bottom:1px solid #e5e5e5}"
+        ".section:last-of-type{border-bottom:none}"
+        ".section-title{font-size:16px;font-weight:700;color:#333;margin-bottom:16px}"
+        ".time-slots{display:grid;grid-template-columns:repeat(auto-fill,minmax(80px,1fr));gap:8px;margin-top:12px}"
+        ".time-slot{padding:10px;border:2px solid #e0e0e0;border-radius:8px;background:#f9f9f9;cursor:pointer;text-align:center;font-size:13px;font-weight:600;color:#333;transition:all 0.2s ease}"
+        ".time-slot:hover{border-color:#22c1c3;background:#eefafc}"
+        ".time-slot.selected{background:#22c1c3;color:#fff;border-color:#22c1c3}"
+        ".slot-status{font-size:13px;color:#666;padding:12px;text-align:center;background:#f5f5f5;border-radius:8px;margin-top:12px}"
+        ".button-group{display:flex;gap:12px;margin-top:28px}"
+        "#submit{flex:1;padding:14px 24px;background:linear-gradient(135deg,#22c1c3 0%,#fdbb2d 100%);color:#fff;border:none;border-radius:8px;font-size:16px;font-weight:700;cursor:pointer;transition:all 0.3s ease;text-transform:uppercase;letter-spacing:0.5px}"
+        "#submit:hover{transform:translateY(-2px);box-shadow:0 10px 25px rgba(34,193,195,0.4)}"
+        "#submit:disabled{opacity:0.6;cursor:not-allowed}"
+        "#out{margin-top:16px;padding:14px;border-radius:8px;font-size:14px;font-weight:600;display:none}"
+        "#out.success{background:#d1fae5;color:#065f46;border-left:4px solid #10b981;display:block}"
+        "#out.error{background:#fee2e2;color:#7f1d1d;border-left:4px solid #dc2626;display:block}"
+        "#out.info{background:#dbeafe;color:#1e40af;border-left:4px solid #3b82f6;display:block}"
+        "</style>"
+        "</head><body>"
+        "<div class=\"container\">"
+        "<div class=\"header\"><h1>Reschedule Appointment</h1><p>Enter your appointment ID and pick a new time</p></div>"
+        "<div id=\"form-container\">"
+        "<div class=\"section\">"
+        "<div class=\"form-group\"><label>Appointment ID</label><input id=\"booking_id\" type=\"number\" placeholder=\"e.g., 123\"></div>"
+        "<div class=\"button-group\"><button id=\"load\" type=\"button\">Load Details</button></div>"
+        "</div>"
+        "<div class=\"section\" id=\"details\" style=\"display:none\">"
+        "<div class=\"section-title\">Current Details</div>"
+        "<div id=\"current\"></div>"
+        "</div>"
+        "<div class=\"section\" id=\"rescheduler\" style=\"display:none\">"
+        "<div class=\"section-title\">Select Date, Time & Doctor/Service</div>"
+        "<div class=\"form-group\"><label>Date</label><input id=\"booking_date\" type=\"date\"></div>"
+        "<div class=\"form-group\"><label>Doctor/Service</label><select id=\"resource_select\"><option value=\"\">Current</option></select></div>"
+        "<div class=\"time-slots\" id=\"slots\"></div>"
+        "<div class=\"slot-status\" id=\"slot-status\" style=\"display:none\"></div>"
+        "</div>"
+        "<div class=\"button-group\" id=\"actions\" style=\"display:none\"><button id=\"submit\" type=\"button\">Reschedule</button></div>"
+        "<div id=\"out\"></div>"
+        "</div>"
+        "</div>"
+        "<script>"
+        "const ORG='" + org_id + "',BOT='" + bot_id + "',BOT_KEY='" + (bot_key or '') + "',API='" + api_url + "';"
+        "let current=null,chosen=null,resourcesByType={},resourceIndex=null;"
+        "function showMsg(t,ty){const o=document.getElementById('out');o.textContent=t;o.className=ty;o.style.display='block';}"
+        "async function loadResources(){"
+        "  try{"
+        "    const h={};if(BOT_KEY)h['X-Bot-Key']=BOT_KEY;"
+        "    const r=await fetch(API+'/api/resources/'+BOT,{headers:h});"
+        "    if(!r.ok)return;"
+        "    const data=await r.json();"
+        "    resourcesByType=(data.resources||[]).reduce((acc,r)=>{acc[r.resource_type]=acc[r.resource_type]||[];acc[r.resource_type].push(r);return acc;},{});"
+        "    resourceIndex=(data.resources||[]).reduce((m,r)=>{m.ids[r.id]=r;if(r.resource_code)m.codes[r.resource_code]=r;m.names[(r.resource_name||'').toLowerCase()]=r;return m;},{ids:{},codes:{},names:{}});"
+        "    const sel=document.getElementById('resource_select');"
+        "    sel.innerHTML='<option value=\"\">Current</option>';"
+        "    (data.resources||[]).forEach(r=>{const opt=document.createElement('option');opt.value=r.id;opt.textContent=r.resource_name;sel.appendChild(opt);});"
+        "  }catch(e){}"
+        "}"
+        "async function loadBooking(){"
+        "  const id=parseInt(document.getElementById('booking_id').value,10);"
+        "  if(!id){showMsg('Enter a valid appointment ID','error');return;}"
+        "  const h={};if(BOT_KEY)h['X-Bot-Key']=BOT_KEY;"
+        "  try{"
+        "    current=null;"
+        "    document.getElementById('details').style.display='none';"
+        "    document.getElementById('rescheduler').style.display='none';"
+        "    document.getElementById('actions').style.display='none';"
+        "    (document.getElementById('current')||{}).innerHTML='';"
+        "    const r=await fetch(API+'/api/booking/'+id,{headers:h});"
+        "    if(!r.ok){showMsg('Booking not found','error'); if(window.parent&&window.parent.postMessage){window.parent.postMessage({type:'RESCHEDULE_BLOCKED',message:'Booking not found'},'*');} return;}"
+        "    current=await r.json();"
+        "    try{"
+        "      var status=(current.status||'').toLowerCase();"
+        "      var end=new Date((current.booking_date||'')+'T'+(current.end_time||'00:00:00'));"
+        "      var now=new Date();"
+        "      if(status==='completed' || (end && !isNaN(end.getTime()) && end.getTime()<=now.getTime())){"
+        "        showMsg('Past appointment cannot be rescheduled.','error');"
+        "        if(window.parent&&window.parent.postMessage){window.parent.postMessage({type:'RESCHEDULE_BLOCKED',message:'Past appointment cannot be rescheduled.'},'*');}"
+        "        document.getElementById('details').style.display='block';"
+        "        document.getElementById('rescheduler').style.display='none';"
+        "        document.getElementById('actions').style.display='none';"
+        "        const cur=document.getElementById('current');"
+        "        cur.innerHTML='<div class=\"form-group\"><label>Name</label><input type=\"text\" value=\"'+(current.customer_name||'')+'\" disabled></div>'+"
+        "                     '<div class=\"form-group\"><label>Email</label><input type=\"text\" value=\"'+(current.customer_email||'')+'\" disabled></div>'+"
+        "                     '<div class=\"form-group\"><label>Current Doctor/Service</label><input type=\"text\" value=\"'+(current.resource_name||'')+'\" disabled></div>'+"
+        "                     '<div class=\"form-group\"><label>Current Date</label><input type=\"text\" value=\"'+(current.booking_date||'')+'\" disabled></div>'+"
+        "                     '<div class=\"form-group\"><label>Current Time</label><input type=\"text\" value=\"'+(current.start_time||'')+' - '+(current.end_time||'')+'\" disabled></div>';"
+        "        return;"
+        "      }"
+        "    }catch(e){}"
+        "    document.getElementById('details').style.display='block';"
+        "    const cur=document.getElementById('current');"
+        "    cur.innerHTML='<div class=\"form-group\"><label>Name</label><input type=\"text\" value=\"'+(current.customer_name||'')+'\" disabled></div>'+"
+        "                 '<div class=\"form-group\"><label>Email</label><input type=\"text\" value=\"'+(current.customer_email||'')+'\" disabled></div>'+"
+        "                 '<div class=\"form-group\"><label>Current Doctor/Service</label><input type=\"text\" value=\"'+(current.resource_name||'')+'\" disabled></div>'+"
+        "                 '<div class=\"form-group\"><label>Current Date</label><input type=\"text\" value=\"'+(current.booking_date||'')+'\" disabled></div>'+"
+        "                 '<div class=\"form-group\"><label>Current Time</label><input type=\"text\" value=\"'+(current.start_time||'')+' - '+(current.end_time||'')+'\" disabled></div>';"
+        "    document.getElementById('rescheduler').style.display='block';"
+        "    document.getElementById('actions').style.display='flex';"
+        "    const d=document.getElementById('booking_date');d.value=(current.booking_date||new Date().toISOString().slice(0,10));"
+        "    await loadResources();"
+        "    try{"
+        "      var end=new Date((current.booking_date||'')+'T'+(current.end_time||'00:00:00'));"
+        "      var now=new Date();"
+        "      if(end && !isNaN(end.getTime()) && end.getTime()<=now.getTime()){"
+        "        showMsg('This appointment has already passed and is marked completed. Only upcoming appointments can be rescheduled.','info');"
+        "        document.getElementById('rescheduler').style.display='none';"
+        "        document.getElementById('actions').style.display='none';"
+        "        return;"
+        "      }"
+        "    }catch(e){}"
+        "    await loadSlots();"
+        "  }catch(e){showMsg('Error loading booking','error');}"
+        "}"
+        "async function loadSlots(){"
+        "  const dt=document.getElementById('booking_date').value;"
+        "  if(!dt||!current)return;"
+        "  const h={};if(BOT_KEY)h['X-Bot-Key']=BOT_KEY;"
+        "  const el=document.getElementById('slots'),st=document.getElementById('slot-status');"
+        "  el.innerHTML='';st.innerHTML='<span class=\"loading-spinner\"></span> Loading...';st.style.display='block';"
+        "  let resourceId=document.getElementById('resource_select').value||current.resource_id||null;"
+        "  const url=resourceId?(API+'/api/resources/'+resourceId+'/available-slots?booking_date='+dt):(API+'/api/bots/'+BOT+'/available-slots?booking_date='+dt);"
+        "  try{"
+        "    const r=await fetch(url,{headers:h});"
+        "    if(!r.ok){st.textContent='Error loading slots';return;}"
+        "    const d=await r.json();const slots=d.slots||[];"
+        "    if(slots.length===0){st.textContent='No available slots for this date';return;}"
+        "    st.style.display='none';"
+        "    slots.forEach(s=>{"
+        "      const b=document.createElement('button');b.type='button';b.className='time-slot';"
+        "      const [h0,m0]=s.start_time.split(':');"
+        "      const hNum=parseInt(h0,10);const ampm=hNum>=12?'PM':'AM';const h12=hNum%12||12;"
+        "      b.textContent=h12+':'+(m0||'00')+' '+ampm;"
+        "      b.onclick=()=>{"
+        "        chosen={start:dt+'T'+s.start_time,end:dt+'T'+s.end_time};"
+        "        document.querySelectorAll('.time-slot').forEach(x=>x.classList.remove('selected'));"
+        "        b.classList.add('selected');"
+        "      };"
+        "      el.appendChild(b);"
+        "    });"
+        "  }catch(e){st.textContent='Error: '+e.message;}"
+        "}"
+        "async function submitReschedule(){"
+        "  if(!current){showMsg('Load an appointment first','error');return;}"
+        "  if(!chosen){showMsg('Select a time slot','error');return;}"
+        "  const id=current.id;"
+        "  const date=document.getElementById('booking_date').value;"
+        "  const startTime=new Date(chosen.start).toTimeString().slice(0,8);"
+        "  const endTime=new Date(chosen.end).toTimeString().slice(0,8);"
+        "  const resourceId=document.getElementById('resource_select').value||current.resource_id||null;"
+        "  const payload={org_id:ORG,booking_date:date,start_time:startTime,end_time:endTime,resource_id:resourceId};"
+        "  const h={'Content-Type':'application/json'};if(BOT_KEY)h['X-Bot-Key']=BOT_KEY;"
+        "  const btn=document.getElementById('submit');btn.disabled=true;btn.textContent='Rescheduling...';"
+        "  try{"
+        "    const r=await fetch(API+'/api/bookings/'+id+'/reschedule',{method:'POST',headers:h,body:JSON.stringify(payload)});"
+        "    const d=await r.json().catch(()=>({}));"
+        "    if(!r.ok){showMsg('Error: '+(d.detail||r.status),'error');btn.disabled=false;btn.textContent='Reschedule';return;}"
+        "    const calStatus=d.calendar_synced?' ✓ Updated in Calendar':' (Calendar sync pending)';"
+        "    showMsg('✓ Rescheduled! ID: '+d.id+calStatus,'success');btn.textContent='Success';"
+        "    const startDisplay=date+' '+startTime; const endDisplay=date+' '+endTime;"
+        "    if(window.parent&&window.parent.postMessage){window.parent.postMessage({type:'RESCHEDULE_SUCCESS',id:d.id,start:startDisplay,end:endDisplay,message:'Rescheduled your appointment to '+date+' '+startTime+' - '+endTime+'. ID: '+d.id},'*');}"
+        "    setTimeout(()=>window.close(),2000);"
+        "  }catch(e){showMsg('Request failed','error');btn.disabled=false;btn.textContent='Reschedule';}"
+        "}"
+        "document.getElementById('load').addEventListener('click',loadBooking);"
+        "document.getElementById('resource_select').addEventListener('change',loadSlots);"
+        "document.getElementById('booking_date').addEventListener('change',loadSlots);"
+        "document.getElementById('submit').addEventListener('click',submitReschedule);"
         "</script>"
         "</body></html>"
     )
@@ -4039,9 +4245,9 @@ def widget_js():
         "     body.scrollTop = body.scrollHeight;\n"
         "     return b;\n"
         "  }\n"
-        "  function openPopup(u){ var ov=document.createElement('div'); ov.className='cb-popup'; ov.style.position='fixed'; ov.style.right='24px'; ov.style.bottom='24px'; ov.style.width='400px'; ov.style.height='560px'; ov.style.background=BG; ov.style.border='1px solid '+BORDER; ov.style.boxShadow=SHADOW; ov.style.borderRadius=RADIUS; ov.style.zIndex='2147483647'; var hd=document.createElement('div'); hd.style.padding='8px 12px'; hd.style.display='flex'; hd.style.justifyContent='space-between'; hd.style.alignItems='center'; hd.style.color=TEXT; var t=document.createElement('div'); t.textContent='Booking Form'; var x=document.createElement('button'); x.textContent='×'; x.style.background='transparent'; x.style.border='none'; x.style.color=TEXT; x.style.fontSize='18px'; x.style.cursor='pointer'; x.onclick=function(){ try{ ov.remove(); }catch(__){} }; hd.appendChild(t); hd.appendChild(x); var fr=document.createElement('iframe'); fr.src=u; fr.style.width='100%'; fr.style.height='calc(100% - 40px)'; fr.style.border='0'; ov.appendChild(hd); ov.appendChild(fr); document.body.appendChild(ov); }\n"
-        "  body.addEventListener('click', function(e){ var a=e.target.closest('a'); if(!a) return; var href=a.getAttribute('href')||''; if(href.indexOf('/api/form/')>-1){ e.preventDefault(); openPopup(href); } });\n"
-        "  window.addEventListener('message', function(e){ var d=e.data; if(d && (d.type==='appointment-booked'||d.type==='BOOKING_SUCCESS')){ if(d.type==='BOOKING_SUCCESS'&&d.message){ addMsg('bot', d.message); }else{ addMsg('bot', 'Booked your appointment for '+(d.start||'')+' to '+(d.end||'')+'. ID: '+d.id); } try{ var ov=document.querySelector('.cb-popup'); if(ov){ ov.remove(); } }catch(__){} } });\n"
+        "  function openPopup(u){ var ov=document.createElement('div'); ov.className='cb-popup'; ov.style.position='fixed'; ov.style.right='24px'; ov.style.bottom='24px'; ov.style.width='400px'; ov.style.height='560px'; ov.style.background=BG; ov.style.border='1px solid '+BORDER; ov.style.boxShadow=SHADOW; ov.style.borderRadius=RADIUS; ov.style.zIndex='2147483647'; var hd=document.createElement('div'); hd.style.padding='8px 12px'; hd.style.display='flex'; hd.style.justifyContent='space-between'; hd.style.alignItems='center'; hd.style.color=TEXT; var t=document.createElement('div'); t.textContent=(u.indexOf('/api/reschedule/')>-1?'Reschedule Form':'Booking Form'); var x=document.createElement('button'); x.textContent='×'; x.style.background='transparent'; x.style.border='none'; x.style.color=TEXT; x.style.fontSize='18px'; x.style.cursor='pointer'; x.onclick=function(){ try{ ov.remove(); }catch(__){} }; hd.appendChild(t); hd.appendChild(x); var fr=document.createElement('iframe'); fr.src=u; fr.style.width='100%'; fr.style.height='calc(100% - 40px)'; fr.style.border='0'; ov.appendChild(hd); ov.appendChild(fr); document.body.appendChild(ov); }\n"
+        "  body.addEventListener('click', function(e){ var a=e.target.closest('a'); if(!a) return; var href=a.getAttribute('href')||''; if(href.indexOf('/api/form/')>-1 || href.indexOf('/api/reschedule/')>-1){ e.preventDefault(); openPopup(href); } });\n"
+        "  window.addEventListener('message', function(e){ var d=e.data; if(d && (d.type==='appointment-booked'||d.type==='BOOKING_SUCCESS'||d.type==='RESCHEDULE_SUCCESS'||d.type==='RESCHEDULE_BLOCKED')){ if(d.message){ addMsg('bot', d.message); }else if(d.type==='RESCHEDULE_SUCCESS'){ addMsg('bot', 'Rescheduled your appointment to '+(d.start||'')+' - '+(d.end||'')+'. ID: '+(d.id||'')); }else{ addMsg('bot', 'Booked your appointment for '+(d.start||'')+' to '+(d.end||'')+'. ID: '+d.id); } try{ var ov=document.querySelector('.cb-popup'); if(ov){ ov.remove(); } }catch(__){} } });\n"
         "  function setBadge(on){\n"
         "    if(!SHOW_BADGE) return;\n"
         "    badge.style.display = on ? 'inline-flex' : 'none';\n"

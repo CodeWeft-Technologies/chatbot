@@ -681,3 +681,51 @@ def on_startup():
     
     thread = threading.Thread(target=cleanup_conversations, daemon=True)
     thread.start()
+    
+    # Schedule periodic completion of past bookings
+    def complete_past_bookings():
+        import time
+        from datetime import datetime, date
+        try:
+            from zoneinfo import ZoneInfo
+        except Exception:
+            ZoneInfo = None
+        while True:
+            try:
+                time.sleep(900)  # Run every 15 minutes
+                conn = psycopg.connect(settings.SUPABASE_DB_DSN, autocommit=True)
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            select id, bot_id, booking_date, end_time, status
+                            from bookings
+                            where status not in ('completed','cancelled','rejected')
+                              and booking_date <= current_date
+                            order by booking_date desc
+                            limit 500
+                        """)
+                        rows = cur.fetchall() or []
+                    for r in rows:
+                        bid = r[0]; bot_id = r[1]; bdate = r[2]; etime = r[3]; st = (r[4] or '').lower()
+                        try:
+                            tz = None
+                            with conn.cursor() as cur2:
+                                cur2.execute("select timezone from bot_booking_settings where bot_id=%s", (bot_id,))
+                                s = cur2.fetchone()
+                                tz = s[0] if s and s[0] else None
+                            now = datetime.now(ZoneInfo(tz)) if (tz and ZoneInfo) else datetime.now()
+                            end_dt = datetime.combine(bdate, etime)
+                            # Treat stored date/time as local to bot timezone if available
+                            if tz and ZoneInfo:
+                                end_dt = end_dt.replace(tzinfo=ZoneInfo(tz))
+                            if end_dt <= now:
+                                with conn.cursor() as cur3:
+                                    cur3.execute("update bookings set status='completed', updated_at=now() where id=%s", (bid,))
+                        except Exception:
+                            pass
+                finally:
+                    conn.close()
+            except Exception:
+                pass
+    thread2 = threading.Thread(target=complete_past_bookings, daemon=True)
+    thread2.start()
