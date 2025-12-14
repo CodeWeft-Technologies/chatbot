@@ -1146,6 +1146,10 @@ def reschedule_booking(booking_id: int, body: BookingRescheduleBody):
                 raise HTTPException(status_code=404, detail="Booking not found")
             bot_id, cust_name, cust_email, cur_date, cur_start, cur_end, cur_status, old_res_id, old_res_name, ext_event_id = b
             
+            # Block rescheduling for cancelled appointments
+            if (cur_status or '').lower() == 'cancelled':
+                raise HTTPException(status_code=409, detail="Cancelled appointment cannot be rescheduled")
+            
             try:
                 from datetime import datetime as _dt
                 now = _dt.now()

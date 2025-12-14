@@ -86,7 +86,7 @@ def _llm_intent_detection(message: str, history: list = None) -> dict:
         context = "\n".join([f"{'User' if h.get('role') == 'user' else 'Bot'}: {h.get('content', '')}" for h in recent])
     
     # LLM prompt for intent detection
-    prompt = f"""Analyze if this message is related to booking/scheduling an appointment.
+    prompt = f"""Analyze if this message is related to booking/scheduling an appointment, including rescheduling, cancellation, or status checks. Treat common misspellings (e.g., "reschudle", "reshedule", "reschdule") as valid.
 
 Previous conversation:
 {context if context else "(No previous messages)"}
@@ -106,7 +106,11 @@ Examples:
 - "Can I come tomorrow?" → {{"is_booking": true, "action": "book", "confidence": 0.85}}
 - "मैं कल आऊंगा" (I'll come tomorrow) → {{"is_booking": true, "action": "book", "confidence": 0.9}}
 - "What are your services?" → {{"is_booking": false, "action": null, "confidence": 0.9}}
-- "I booked a hotel" → {{"is_booking": false, "action": null, "confidence": 0.85}}"""
+- "I booked a hotel" → {{"is_booking": false, "action": null, "confidence": 0.85}}
+- "reschudle my appointment to tomorrow 3pm" → {{"is_booking": true, "action": "reschedule", "confidence": 0.9}}
+- "pls re schedule apointment" → {{"is_booking": true, "action": "reschedule", "confidence": 0.85}}
+- "cancel my booking id 123" → {{"is_booking": true, "action": "cancel", "confidence": 0.9}}
+- "check my appointment status" → {{"is_booking": true, "action": "status", "confidence": 0.8}}"""
 
     try:
         response = client.chat.completions.create(
@@ -204,7 +208,7 @@ def _detect_booking_intent(message: str, history: list = None) -> dict:
     
     # Reschedule keywords
     reschedule_keywords = [
-        r'\b(reschedule|re[-\s]?schedule|reshedule|reschudule|rescedule|change|modify|shift|move)\b',
+        r'\b(reschedule|re[-\s]?schedule|reshedule|reschudule|rescedule|reschdule|reshedul|rechedule|rescheduel|reschedual|reschedul|rescheduling|change|modify|shift|move)\b',
         r'\b(बदल|परिवर्तन|पुनर्निर्धारण|change)\b',
         r'\b(மாற்று|மாற்றம்)\b',
         r'\b(మార్చు|మార్పు)\b',
@@ -361,14 +365,6 @@ def _hybrid_intent_detection(message: str, history: list = None) -> dict:
     
     # Step 2: High confidence? Return immediately
     if regex_confidence >= 0.75:
-        return {
-            **regex_result,
-            'language': detected_lang,
-            'detection_method': 'regex'
-        }
-    
-    # Step 3: Very low confidence and no booking signal? Skip LLM
-    if regex_confidence < 0.20 and not regex_result['is_booking']:
         return {
             **regex_result,
             'language': detected_lang,
@@ -547,7 +543,7 @@ def _detect_booking_intent(message: str, history: list = None) -> dict:
     
     # Reschedule keywords
     reschedule_keywords = {
-        'reschedule', 're schedule', 'reshedule', 'reschudule', 'rescedule', 'change', 'modify', 'move', 'shift', 'postpone',
+        'reschedule', 're schedule', 'reshedule', 'reschudule', 'rescedule', 'reschdule', 'reshedul', 'rechedule', 'rescheduel', 'reschedual', 'reschedul', 'rescheduling', 'change', 'modify', 'move', 'shift', 'postpone',
         'बदलना', 'परिवर्तन', 'மாற்று', 'మార్చు', 'পরিবর্তন', 'बदल', 'બદલો', 'ಬದಲಾಯಿಸಿ', 'മാറ്റുക', 'ਬਦਲੋ'
     }
     
@@ -741,7 +737,7 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
             res_form_url = f"{base}/api/reschedule/{bot_id}?org_id={body.org_id}" + (f"&bot_key={public_api_key}" if public_api_key else "")
             
             # Handle different intents with user-friendly responses
-            if intent_result['is_booking'] and intent_result['confidence'] >= 0.4 and not (intent_result.get('action', 'book') == 'reschedule' and intent_result.get('has_appointment_id')):
+            if intent_result['is_booking'] and intent_result.get('action') == 'reschedule':
                 intent_type = intent_result.get('action', 'book')
                 # Map action to response key
                 if intent_type == 'book':
@@ -770,20 +766,20 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
                         'pt': f"Ficarei feliz em ajudá-lo a agendar uma consulta! Por favor, use nosso [formulário de agendamento]({form_url}) para ver os horários disponíveis.",
                     },
                     'reschedule': {
-                        'en': f"To reschedule your appointment, please provide your appointment ID or use the [reschedule form]({res_form_url}) to select a new time.",
-                        'hi': f"अपनी अपॉइंटमेंट को बदलने के लिए, कृपया अपनी अपॉइंटमेंट ID प्रदान करें या नया समय चुनने के लिए [रीशेड्यूल फॉर्म]({res_form_url}) का उपयोग करें।",
-                        'ta': f"உங்கள் சந்திப்பை மாற்ற, உங்கள் அப்பாயின்ட்மென்ட் ID வழங்கவும் அல்லது புதிய நேரத்தைத் தேர்ந்தெடுக்க [மறு அட்டவணை படிவம்]({res_form_url}) பயன்படுத்தவும்.",
-                        'te': f"మీ అపాయింట్మెంట్‌ను మార్చడానికి, మీ అపాయింట్మెంట్ ID అందించండి లేదా కొత్త సమయాన్ని ఎంచుకోవడానికి [రీషెడ్యూల్ ఫారమ్]({res_form_url}) ఉపయోగించండి.",
-                        'kn': f"ನಿಮ್ಮ ಅಪಾಯಿಂಟ್ಮೆಂಟ್ ಬದಲಾಯಿಸಲು, ನಿಮ್ಮ ಅಪಾಯಿಂಟ್ಮೆಂಟ್ ID ನೀಡಿ ಅಥವಾ ಹೊಸ ಸಮಯವನ್ನು ಆಯ್ಕೆ ಮಾಡಲು [ಮರುನಿಗದಿ ಫಾರ್ಮ್]({res_form_url}) ಬಳಸಿ.",
-                        'ml': f"നിങ്ങളുടെ അപ്പോയിന്റ്മെന്റ് മാറ്റാൻ, നിങ്ങളുടെ അപ്പോയിന്റ്മെന്റ് ID നൽകുക അല്ലെങ്കിൽ പുതിയ സമയം തിരഞ്ഞെടുക്കാൻ [റീഷെഡ്യൂൾ ഫോം]({res_form_url}) ഉപയോഗിക്കുക.",
-                        'bn': f"আপনার অ্যাপয়েন্টমেন্ট পরিবর্তন করতে, আপনার অ্যাপয়েন্টমেন্ট ID প্রদান করুন অথবা নতুন সময় নির্বাচন করতে [রিশিডিউল ফর্ম]({res_form_url}) ব্যবহার করুন।",
-                        'mr': f"तुमची भेट बदलण्यासाठी, तुमचा अपॉइंटमेंट ID द्या किंवा नवीन वेळ निवडण्यासाठी [रीशेड्यूल फॉर्म]({res_form_url}) वापरा.",
-                        'gu': f"તમારી મુલાકાત બદલવા માટે, તમારી એપોઇન્ટમેન્ટ ID આપો અથવા નવો સમય પસંદ કરવા માટે [રીશેડ્યૂલ ફોર્મ]({res_form_url}) વાપરો.",
-                        'pa': f"ਆਪਣੀ ਮੁਲਾਕਾਤ ਬਦਲਣ ਲਈ, ਆਪਣੀ ਮੁਲਾਕਾਤ ID ਦਿਓ ਜਾਂ ਨਵਾਂ ਸਮਾਂ ਚੁਣਨ ਲਈ [ਰੀਸ਼ਡਿਊਲ ਫਾਰਮ]({res_form_url}) ਵਰਤੋਂ ਕਰੋ.",
-                        'es': f"Para reprogramar su cita, proporcione su ID de cita o use el [formulario de reprogramación]({res_form_url}) para seleccionar un nuevo horario.",
-                        'fr': f"Pour reprogrammer votre rendez-vous, veuillez fournir votre ID de rendez-vous ou utiliser le [formulaire de replanification]({res_form_url}).",
-                        'de': f"Um Ihren Termin zu verschieben, geben Sie bitte Ihre Termin-ID an oder nutzen Sie das [Umlageformular]({res_form_url}).",
-                        'pt': f"Para remarcar sua consulta, forneça seu ID de consulta ou use o [formulário de remarcação]({res_form_url}).",
+                        'en': f"To reschedule your appointment, use the [reschedule form]({res_form_url}) to select a new time.",
+                        'hi': f"अपनी अपॉइंटमेंट को रीशेड्यूल करने के लिए [रीशेड्यूल फॉर्म]({res_form_url}) का उपयोग करें और नया समय चुनें।",
+                        'ta': f"உங்கள் சந்திப்பை மீண்டும் திட்டமிட [மறு அட்டவணை படிவம்]({res_form_url}) பயன்படுத்தி புதிய நேரத்தைத் தேர்ந்தெடுக்கவும்.",
+                        'te': f"మీ అపాయింట్మెంట్‌ను రీషెడ్యూల్ చేయడానికి [రీషెడ్యూల్ ఫారమ్]({res_form_url}) ఉపయోగించి కొత్త సమయాన్ని ఎంచుకోండి.",
+                        'kn': f"ನಿಮ್ಮ ಅಪಾಯಿಂಟ್ಮೆಂಟ್ ಮರುನಿಗದಿಗೆ [ಮರುನಿಗದಿ ಫಾರ್ಮ್]({res_form_url}) ಬಳಸಿ ಮತ್ತು ಹೊಸ ಸಮಯವನ್ನು ಆಯ್ಕೆಮಾಡಿ.",
+                        'ml': f"നിങ്ങളുടെ അപ്പോയിന്റ്മെന്റ് റീഷെഡ്യൂൾ ചെയ്യാൻ [റീഷെഡ്യൂൾ ഫോം]({res_form_url}) ഉപയോഗിച്ച് പുതിയ സമയം തിരഞ്ഞെടുക്കുക.",
+                        'bn': f"আপনার অ্যাপয়েন্টমেন্ট রিশিডিউল করতে [রিশিডিউল ফর্ম]({res_form_url}) ব্যবহার করে নতুন সময় নির্বাচন করুন।",
+                        'mr': f"तुमची भेट रीशेड्यूल करण्यासाठी [रीशेड्यूल फॉर्म]({res_form_url}) वापरून नवीन वेळ निवडा.",
+                        'gu': f"તમારી મુલાકાતને રીશેડ્યૂલ કરવા [રીશેડ્યૂલ ફોર્મ]({res_form_url}) નો ઉપયોગ કરીને નવો સમય પસંદ કરો.",
+                        'pa': f"ਆਪਣੀ ਮੁਲਾਕਾਤ ਨੂੰ ਰੀਸ਼ਡਿਊਲ ਕਰਨ ਲਈ [ਰੀਸ਼ਡਿਊਲ ਫਾਰਮ]({res_form_url}) ਵਰਤੋਂ ਅਤੇ ਨਵਾਂ ਸਮਾਂ ਚੁਣੋ.",
+                        'es': f"Para reprogramar su cita, use el [formulario de reprogramación]({res_form_url}) para seleccionar un nuevo horario.",
+                        'fr': f"Pour reprogrammer votre rendez-vous, utilisez le [formulaire de replanification]({res_form_url}) pour choisir un nouvel horaire.",
+                        'de': f"Um Ihren Termin zu verschieben, verwenden Sie das [Umlageformular]({res_form_url}), um eine neue Zeit auszuwählen.",
+                        'pt': f"Para remarcar sua consulta, use o [formulário de remarcação]({res_form_url}) para selecionar um novo horário.",
                     },
                     'cancel': {
                         'en': "I can help you cancel your appointment. Please provide your appointment ID (e.g., 'appointment 123' or 'ID: 123').",
@@ -819,13 +815,7 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
                     }
                 }
                 
-                response_text = responses.get(intent_type, {}).get(lang, responses.get(intent_type, {}).get('en', f"Please use our [booking form]({form_url}) to schedule your appointment."))
-                if intent_type == 'reschedule' and not intent_result.get('has_appointment_id'):
-                    response_text = f"Use the [reschedule form]({res_form_url}) to pick a new time or doctor/service."
-                if intent_type == 'reschedule':
-                    response_text = f"Use the [reschedule form]({res_form_url}) to pick a new time or doctor/service."
-                if intent_type == 'reschedule':
-                    response_text = f"Use the [reschedule form]({res_form_url}) to pick a new time or doctor/service."
+                response_text = f"Use the [reschedule form]({res_form_url}) to pick a new time or doctor/service."
                 
                 _ensure_usage_table(conn)
                 _log_chat_usage(conn, body.org_id, bot_id, intent_result['confidence'], False)
@@ -973,7 +963,7 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
                     if not c:
                         _ensure_usage_table(conn)
                         _log_chat_usage(conn, body.org_id, bot_id, 0.0, True)
-                        return {"answer": "Calendar not connected. Or use the [booking form](" + form_url + ")", "citations": [], "similarity": 0.0}
+                        return {"answer": "Calendar not connected. Or use the [" + ("reschedule form" if (intent_result and intent_result.get('action') == 'reschedule') else "booking form") + "](" + (res_form_url if (intent_result and intent_result.get('action') == 'reschedule') else form_url) + ")", "citations": [], "similarity": 0.0}
                     cal_id, at_enc, rt_enc, exp = c
                     from app.services.calendar_google import _decrypt, build_service_from_tokens, update_event_oauth, delete_event_oauth
                     at = _decrypt(at_enc) if at_enc else None
@@ -984,13 +974,22 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
                         _log_chat_usage(conn, body.org_id, bot_id, 0.0, True)
                         return {"answer": "Calendar service unavailable.", "citations": [], "similarity": 0.0}
                     if ("cancel" in lowmsg):
+                        if ((cur_st or '').lower() == 'completed'):
+                            _ensure_usage_table(conn)
+                            _log_chat_usage(conn, body.org_id, bot_id, 0.0, False)
+                            return {"answer": "Completed appointment cannot be cancelled.", "citations": [], "similarity": 0.0}
                         ok = delete_event_oauth(svc, cal_id or "primary", ev_id)
                         if not ok:
                             _ensure_usage_table(conn)
                             _log_chat_usage(conn, body.org_id, bot_id, 0.0, True)
                             return {"answer": "Cancel failed.", "citations": [], "similarity": 0.0}
                         with conn.cursor() as cur:
-                            cur.execute("update bot_appointments set status=%s, updated_at=now() where id=%s", ("cancelled", ap_id))
+                            cur.execute("select 1 from bookings where id=%s and (org_id=%s or org_id::text=%s) and bot_id=%s", (ap_id, normalize_org_id(body.org_id), body.org_id, bot_id))
+                            in_bookings = cur.fetchone()
+                            if in_bookings:
+                                cur.execute("update bookings set status=%s, cancelled_at=now(), updated_at=now() where id=%s", ("cancelled", ap_id))
+                            else:
+                                cur.execute("update bot_appointments set status=%s, updated_at=now() where id=%s", ("cancelled", ap_id))
                         _log_audit(conn, body.org_id, bot_id, ap_id, "cancel", {})
                         _ensure_usage_table(conn)
                         _log_chat_usage(conn, body.org_id, bot_id, 1.0, False)
@@ -1005,7 +1004,7 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
                         if not si_ei:
                             _ensure_usage_table(conn)
                             _log_chat_usage(conn, body.org_id, bot_id, 0.0, True)
-                            return {"answer": "Provide new time to reschedule. E.g., 'reschedule id " + str(ap_id) + " to tomorrow 3pm'. Or use the [booking form](" + form_url + ")", "citations": [], "similarity": 0.0}
+                        return {"answer": "Use the [reschedule form](" + res_form_url + ") to reschedule your appointment.", "citations": [], "similarity": 0.0}
                         new_si, new_ei = si_ei
                         patch = {"start": {"dateTime": new_si}, "end": {"dateTime": new_ei}}
                         ok = update_event_oauth(svc, cal_id or "primary", ev_id, patch)
@@ -1116,13 +1115,14 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
                     if not si or not ei:
                         _ensure_usage_table(conn)
                         _log_chat_usage(conn, body.org_id, bot_id, 0.0, True)
-                        return {"answer": "Could not parse date/time. Try formats like '2025-12-06 15:30' or 'tomorrow at 3pm for 30 minutes'. Or use the [booking form](" + form_url + ")", "citations": [], "similarity": 0.0}
+                        _link = res_form_url if (intent_result and intent_result.get('action') == 'reschedule') else form_url
+                        return {"answer": "Could not parse date/time. Try formats like '2025-12-06 15:30' or 'tomorrow at 3pm for 30 minutes'. Or use the [" + ("reschedule form" if (intent_result and intent_result.get('action') == 'reschedule') else "booking form") + "](" + _link + ")", "citations": [], "similarity": 0.0}
                     tmn = _dt.datetime.fromisoformat(si)
                     tmx = _dt.datetime.fromisoformat(ei)
                     if not svc:
                         _ensure_usage_table(conn)
                         _log_chat_usage(conn, body.org_id, bot_id, 0.0, True)
-                        return {"answer": "Calendar not connected. Please connect Google Calendar in the dashboard. Or use the [booking form](" + form_url + ")", "citations": [], "similarity": 0.0}
+                        return {"answer": "Calendar not connected. Please connect Google Calendar in the dashboard. Or use the [" + ("reschedule form" if (intent_result and intent_result.get('action') == 'reschedule') else "booking form") + "](" + (res_form_url if (intent_result and intent_result.get('action') == 'reschedule') else form_url) + ")", "citations": [], "similarity": 0.0}
                     items = list_events_oauth(svc, cal_id or "primary", tmn.isoformat(), tmx.isoformat())
                     # extract user info from message
                     info = {}
@@ -1146,7 +1146,7 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
                     if missing:
                         _ensure_usage_table(conn)
                         _log_chat_usage(conn, body.org_id, bot_id, 0.0, True)
-                        return {"answer": ("Please provide: " + ", ".join(missing) + ". Or use the [booking form](" + form_url + ")"), "citations": [], "similarity": 0.0}
+                        return {"answer": ("Please provide: " + ", ".join(missing) + ". Or use the [" + ("reschedule form" if (intent_result and intent_result.get('action') == 'reschedule') else "booking form") + "](" + (res_form_url if (intent_result and intent_result.get('action') == 'reschedule') else form_url) + ")"), "citations": [], "similarity": 0.0}
                     occ = len(items) if items else 0
                     with conn.cursor() as cur:
                         # Check capacity from unified bookings table
@@ -1179,7 +1179,7 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
                             if not ext_id:
                                 _ensure_usage_table(conn)
                                 _log_chat_usage(conn, body.org_id, bot_id, 0.0, True)
-                                return {"answer": "Calendar booking failed. Please try again after reconnecting Google Calendar. Or use the [booking form](" + form_url + ")", "citations": [], "similarity": 0.0}
+                                return {"answer": "Calendar booking failed. Please try again after reconnecting Google Calendar. Or use the [" + ("reschedule form" if (intent_result and intent_result.get('action') == 'reschedule') else "booking form") + "](" + (res_form_url if (intent_result and intent_result.get('action') == 'reschedule') else form_url) + ")", "citations": [], "similarity": 0.0}
                             _ensure_appointments_table(conn)
                             
                             # Debug logging
@@ -1223,7 +1223,7 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
                         except Exception:
                             _ensure_usage_table(conn)
                             _log_chat_usage(conn, body.org_id, bot_id, 0.0, True)
-                            return {"answer": "Booking failed. Please try again or provide a different time. Or use the [booking form](" + form_url + ")", "citations": [], "similarity": 0.0}
+                            return {"answer": "Booking failed. Please try again or provide a different time. Or use the [" + ("reschedule form" if (intent_result and intent_result.get('action') == 'reschedule') else "booking form") + "](" + (res_form_url if (intent_result and intent_result.get('action') == 'reschedule') else form_url) + ")", "citations": [], "similarity": 0.0}
                     else:
                         sugg = []
                         cur_t = _dt.datetime.fromisoformat(si)
@@ -1237,11 +1237,11 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
                                 break
                         _ensure_usage_table(conn)
                         _log_chat_usage(conn, body.org_id, bot_id, 0.0, True)
-                        return {"answer": ("Unavailable. Alternatives: " + ", ".join(sugg) + ". Or use the [booking form](" + form_url + ")"), "citations": [], "similarity": 0.0}
+                        return {"answer": ("Unavailable. Alternatives: " + ", ".join(sugg) + ". Or use the [" + ("reschedule form" if (intent_result and intent_result.get('action') == 'reschedule') else "booking form") + "](" + (res_form_url if (intent_result and intent_result.get('action') == 'reschedule') else form_url) + ")"), "citations": [], "similarity": 0.0}
             except Exception:
                 _ensure_usage_table(conn)
                 _log_chat_usage(conn, body.org_id, bot_id, 0.0, True)
-                return {"answer": "Could not process booking request. Or use the [booking form](" + form_url + ")", "citations": [], "similarity": 0.0}
+                return {"answer": "Could not process booking request. Or use the [" + ("reschedule form" if (intent_result and intent_result.get('action') == 'reschedule') else "booking form") + "](" + (res_form_url if (intent_result and intent_result.get('action') == 'reschedule') else form_url) + ")", "citations": [], "similarity": 0.0}
         m0 = (body.message or '').strip().lower()
         wm = None
         is_greet = bool(m0) and (m0 in {"hi","hello","hey","hola","hii"} or m0.startswith("hi ") or m0.startswith("hello ") or m0.startswith("hey "))
@@ -1498,7 +1498,7 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
             res_form_url = f"{base}/api/reschedule/{bot_id}?org_id={body.org_id}" + (f"&bot_key={public_api_key}" if public_api_key else "")
             
             # Handle different intents with user-friendly responses
-            if intent_result['is_booking'] and intent_result['confidence'] >= 0.4 and not (intent_result.get('action', 'book') == 'reschedule' and intent_result.get('has_appointment_id')):
+            if intent_result['is_booking'] and intent_result.get('action') == 'reschedule':
                 intent_type = intent_result.get('action', 'book')
                 # Map action to response key
                 if intent_type == 'book':
@@ -1523,16 +1523,16 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
                         'pa': f"ਤੁਹਾਡੀ ਮੁਲਾਕਾਤ ਬੁੱਕ ਕਰਨ ਵਿੱਚ ਮਦਦ ਕਰਕੇ ਮੈਨੂੰ ਖੁਸ਼ੀ ਹੋਵੇਗੀ! ਉਪਲਬਧ ਸਮਾਂ ਸਲਾਟ ਦੇਖਣ ਲਈ ਸਾਡੇ [ਬੁਕਿੰਗ ਫਾਰਮ]({form_url}) ਦੀ ਵਰਤੋਂ ਕਰੋ.",
                     },
                     'reschedule': {
-                        'en': f"To reschedule your appointment, please provide your appointment ID or use the [reschedule form]({res_form_url}) to select a new time.",
-                        'hi': f"अपनी अपॉइंटमेंट को बदलने के लिए, कृपया अपनी अपॉइंटमेंट ID प्रदान करें या नया समय चुनने के लिए [रीशेड्यूल फॉर्म]({res_form_url}) का उपयोग करें।",
-                        'ta': f"உங்கள் சந்திப்பை மாற்ற, உங்கள் அப்பாயின்ட்மென்ட் ID வழங்கவும் அல்லது புதிய நேரத்தைத் தேர்ந்தெடுக்க [மறு அட்டவணை படிவம்]({res_form_url}) பயன்படுத்தவும்.",
-                        'te': f"మీ అపాయింట్మెంట్‌ను మార్చడానికి, మీ అపాయింట్మెంట్ ID ఇవ్వండి లేదా కొత్త సమయాన్ని ఎంచుకోవడానికి [రీషెడ్యూల్ ఫారమ్]({res_form_url}) ఉపయోగించండి.",
-                        'kn': f"ನಿಮ್ಮ ಅಪಾಯಿಂಟ್ಮೆಂಟ್ ಬದಲಾಯಿಸಲು, ನಿಮ್ಮ ಅಪಾಯಿಂಟ್ಮೆಂಟ್ ID ನೀಡಿ ಅಥವಾ ಹೊಸ ಸಮಯವನ್ನು ಆಯ್ಕೆ ಮಾಡಲು [ಮರುನಿಗದಿ ಫಾರ್ಮ್]({res_form_url}) ಬಳಸಿ.",
-                        'ml': f"നിങ്ങളുടെ അപ്പോയിന്റ്മെന്റ് മാറ്റാൻ, നിങ്ങളുടെ അപ്പോയിന്റ്മെന്റ് ID നൽകുക അല്ലെങ്കിൽ പുതിയ സമയം തിരഞ്ഞെടുക്കാൻ [റീഷെഡ്യൂൾ ഫോം]({res_form_url}) ഉപയോഗിക്കുക.",
-                        'bn': f"আপনার অ্যাপয়েন্টমেন্ট পরিবর্তন করতে, আপনার অ্যাপয়েন্টমেন্ট ID প্রদান করুন অথবা নতুন সময় নির্বাচন করতে [রিশিডিউল ফর্ম]({res_form_url}) ব্যবহার করুন।",
-                        'mr': f"तुमची भेट बदलण्यासाठी, तुमचा अपॉइंटमेंट ID द्या किंवा नवीन वेळ निवडण्यासाठी [रीशेड्यूल फॉर्म]({res_form_url}) वापरा.",
-                        'gu': f"તમારી મુલાકાત બદલવા માટે, તમારી એપોઇન્ટમેન્ટ ID આપો અથવા નવો સમય પસંદ કરવા માટે [રીશેડ્યૂલ ફોર્મ]({res_form_url}) વાપરો.",
-                        'pa': f"ਆਪਣੀ ਮੁਲਾਕਾਤ ਬਦਲਣ ਲਈ, ਆਪਣੀ ਮੁਲਾਕਾਤ ID ਦਿਓ ਜਾਂ ਨਵਾਂ ਸਮਾਂ ਚੁਣਨ ਲਈ [ਰੀਸ਼ਡਿਊਲ ਫਾਰਮ]({res_form_url}) ਵਰਤੋਂ ਕਰੋ.",
+                        'en': f"To reschedule your appointment, use the [reschedule form]({res_form_url}) to select a new time.",
+                        'hi': f"अपनी अपॉइंटमेंट को रीशेड्यूल करने के लिए [रीशेड्यूल फॉर्म]({res_form_url}) का उपयोग करें और नया समय चुनें।",
+                        'ta': f"உங்கள் சந்திப்பை மீண்டும் திட்டமிட [மறு அட்டவணை படிவம்]({res_form_url}) பயன்படுத்தி புதிய நேரத்தைத் தேர்ந்தெடுக்கவும்.",
+                        'te': f"మీ అపాయింట్మెంట్‌ను రీషెడ్యూల్ చేయడానికి [రీషెడ్యూల్ ఫారమ్]({res_form_url}) ఉపయోగించి కొత్త సమయాన్ని ఎంచుకోండి.",
+                        'kn': f"ನಿಮ್ಮ ಅಪಾಯಿಂಟ್ಮೆಂಟ್ ಮರುನಿಗದಿಗೆ [ಮರುನಿಗದಿ ಫಾರ್ಮ್]({res_form_url}) ಬಳಸಿ ಮತ್ತು ಹೊಸ ಸಮಯವನ್ನು ಆಯ್ಕೆಮಾಡಿ.",
+                        'ml': f"നിങ്ങളുടെ അപ്പോയിന്റ്മെന്റ് റീഷെഡ്യൂൾ ചെയ്യാൻ [റീഷെഡ്യൂൾ ഫോം]({res_form_url}) ഉപയോഗിച്ച് പുതിയ സമയം തിരഞ്ഞെടുക്കുക.",
+                        'bn': f"আপনার অ্যাপয়েন্টমেন্ট রিশিডিউল করতে [রিশিডিউল ফর্ম]({res_form_url}) ব্যবহার করে নতুন সময় নির্বাচন করুন।",
+                        'mr': f"तुमची भेट रीशेड्यूल करण्यासाठी [रीशेड्यूल फॉर्म]({res_form_url}) वापरून नवीन वेळ निवडा.",
+                        'gu': f"તમારી મુલાકાતને રીશેડ્યૂલ કરવા [રીશેડ્યૂલ ફોર્મ]({res_form_url}) નો ઉપયોગ કરીને નવો સમય પસંદ કરો.",
+                        'pa': f"ਆਪਣੀ ਮੁਲਾਕਾਤ ਨੂੰ ਰੀਸ਼ਡਿਊਲ ਕਰਨ ਲਈ [ਰੀਸ਼ਡਿਊਲ ਫਾਰਮ]({res_form_url}) ਵਰਤੋਂ ਅਤੇ ਨਵਾਂ ਸਮਾਂ ਚੁਣੋ.",
                     }
                 }
                 
@@ -1663,7 +1663,7 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
                     if not c:
                         _ensure_usage_table(conn)
                         _log_chat_usage(conn, body.org_id, bot_id, 0.0, True)
-                        return StreamingResponse(gen_status("Calendar not connected. Or use the [booking form](" + form_url + ")"), media_type="text/event-stream")
+                        return StreamingResponse(gen_status("Calendar not connected. Or use the [" + ("reschedule form" if (intent_result and intent_result.get('action') == 'reschedule') else "booking form") + "](" + (res_form_url if (intent_result and intent_result.get('action') == 'reschedule') else form_url) + ")"), media_type="text/event-stream")
                     cal_id, at_enc, rt_enc, exp = c
                     from app.services.calendar_google import _decrypt, build_service_from_tokens, update_event_oauth, delete_event_oauth
                     at = _decrypt(at_enc) if at_enc else None
@@ -1675,41 +1675,30 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
                         return StreamingResponse(gen_status("Calendar service unavailable."), media_type="text/event-stream")
                     lw = msg.lower()
                     if ("cancel" in lw):
+                        if ((cur_st or '').lower() == 'completed'):
+                            _ensure_usage_table(conn)
+                            _log_chat_usage(conn, body.org_id, bot_id, 0.0, False)
+                            return StreamingResponse(gen_status("Completed appointment cannot be cancelled."), media_type="text/event-stream")
                         ok = delete_event_oauth(svc, cal_id or "primary", ev_id)
                         if not ok:
                             _ensure_usage_table(conn)
                             _log_chat_usage(conn, body.org_id, bot_id, 0.0, True)
                             return StreamingResponse(gen_status("Cancel failed."), media_type="text/event-stream")
                         with conn.cursor() as cur:
-                            cur.execute("update bot_appointments set status=%s, updated_at=now() where id=%s", ("cancelled", ap_id))
+                            cur.execute("select 1 from bookings where id=%s and (org_id=%s or org_id::text=%s) and bot_id=%s", (ap_id, normalize_org_id(body.org_id), body.org_id, bot_id))
+                            in_bookings = cur.fetchone()
+                            if in_bookings:
+                                cur.execute("update bookings set status=%s, cancelled_at=now(), updated_at=now() where id=%s", ("cancelled", ap_id))
+                            else:
+                                cur.execute("update bot_appointments set status=%s, updated_at=now() where id=%s", ("cancelled", ap_id))
                         _log_audit(conn, body.org_id, bot_id, ap_id, "cancel", {})
                         _ensure_usage_table(conn)
                         _log_chat_usage(conn, body.org_id, bot_id, 1.0, False)
                         return StreamingResponse(gen_status(f"Cancelled appointment ID: {ap_id}"), media_type="text/event-stream")
                     if ("reschedule" in lw) or ("change" in lw):
-                        seg = None
-                        m = re.search(r"\bto\b(.+)$", msg, re.IGNORECASE)
-                        if m:
-                            seg = _parse_natural(m.group(1)) or None
-                        if not seg:
-                            seg = _parse_natural(msg)
-                        if not seg:
-                            _ensure_usage_table(conn)
-                            _log_chat_usage(conn, body.org_id, bot_id, 0.0, True)
-                            return StreamingResponse(gen_status("Provide new time to reschedule. E.g., 'reschedule id " + str(ap_id) + " to tomorrow 3pm'. Or use the [booking form](" + form_url + ")"), media_type="text/event-stream")
-                        new_si, new_ei = seg
-                        patch = {"start": {"dateTime": new_si}, "end": {"dateTime": new_ei}}
-                        ok = update_event_oauth(svc, cal_id or "primary", ev_id, patch)
-                        if not ok:
-                            _ensure_usage_table(conn)
-                            _log_chat_usage(conn, body.org_id, bot_id, 0.0, True)
-                            return StreamingResponse(gen_status("Reschedule failed."), media_type="text/event-stream")
-                        with conn.cursor() as cur:
-                            cur.execute("update bot_appointments set start_iso=%s, end_iso=%s, status=%s, updated_at=now() where id=%s", (new_si, new_ei, "booked", ap_id))
-                        _log_audit(conn, body.org_id, bot_id, ap_id, "reschedule", {"new_start_iso": new_si, "new_end_iso": new_ei})
                         _ensure_usage_table(conn)
-                        _log_chat_usage(conn, body.org_id, bot_id, 1.0, False)
-                        return StreamingResponse(gen_status(f"Rescheduled ID {ap_id} to {new_si} - {new_ei}"), media_type="text/event-stream")
+                        _log_chat_usage(conn, body.org_id, bot_id, 0.0, False)
+                        return StreamingResponse(gen_status("Use the [reschedule form](" + res_form_url + ") to reschedule your appointment."), media_type="text/event-stream")
                     _ensure_usage_table(conn)
                     _log_chat_usage(conn, body.org_id, bot_id, 0.0, False)
                     return StreamingResponse(gen_status(f"Appointment {ap_id}: {cur_si} to {cur_ei}. Status: {cur_st}"), media_type="text/event-stream")
@@ -1809,7 +1798,8 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
                 svc = None
             if not si or not ei:
                 def gen_need_time():
-                    text = "Could not parse date/time. Try formats like '2025-12-06 15:30' or 'tomorrow at 3pm for 30 minutes'. Or use the [booking form](" + form_url + ")"
+                    _link = res_form_url if (intent_result and intent_result.get('action') == 'reschedule') else form_url
+                    text = "Could not parse date/time. Try formats like '2025-12-06 15:30' or 'tomorrow at 3pm for 30 minutes'. Or use the [" + ("reschedule form" if (intent_result and intent_result.get('action') == 'reschedule') else "booking form") + "](" + _link + ")"
                     yield f"data: {text}\n\n"
                     yield "event: end\n\n"
                 _ensure_usage_table(conn)
@@ -1817,7 +1807,7 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
                 return StreamingResponse(gen_need_time(), media_type="text/event-stream")
             if not svc:
                 def gen_need_cal():
-                    text = "Calendar not connected. Please connect Google Calendar in the dashboard. Or use the [booking form](" + form_url + ")"
+                    text = "Calendar not connected. Please connect Google Calendar in the dashboard. Or use the [" + ("reschedule form" if (intent_result and intent_result.get('action') == 'reschedule') else "booking form") + "](" + (res_form_url if (intent_result and intent_result.get('action') == 'reschedule') else form_url) + ")"
                     yield f"data: {text}\n\n"
                     yield "event: end\n\n"
                 _ensure_usage_table(conn)
@@ -1850,7 +1840,7 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
             missing = [f for f in (required_fields or []) if not prev.get(f)]
             if missing:
                 def gen_need_fields():
-                    text = ("Please provide: " + ", ".join(missing) + ". Or use the [booking form](" + form_url + ")")
+                    text = ("Please provide: " + ", ".join(missing) + ". Or use the [" + ("reschedule form" if (intent_result and intent_result.get('action') == 'reschedule') else "booking form") + "](" + (res_form_url if (intent_result and intent_result.get('action') == 'reschedule') else form_url) + ")")
                     yield f"data: {text}\n\n"
                     yield "event: end\n\n"
                 _ensure_usage_table(conn)
@@ -1865,7 +1855,7 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
                 occ_db = int(cur.fetchone()[0])
             if max(occ, occ_db) >= capacity:
                 def gen_busy():
-                    text = "That time is unavailable. Please suggest another time. Or use the [booking form](" + form_url + ")"
+                    text = "That time is unavailable. Please suggest another time. Or use the [" + ("reschedule form" if (intent_result and intent_result.get('action') == 'reschedule') else "booking form") + "](" + (res_form_url if (intent_result and intent_result.get('action') == 'reschedule') else form_url) + ")"
                     yield f"data: {text}\n\n"
                     yield "event: end\n\n"
                 _ensure_usage_table(conn)
@@ -3171,7 +3161,12 @@ def booking_form(bot_id: str, org_id: str, bot_key: Optional[str] = None):
         "  document.getElementById('booking_date').addEventListener('change',loadSlots);"
         "  Array.from(document.querySelectorAll('select')).forEach(s=>s.addEventListener('change',loadSlots));"
         "  document.getElementById('submit').addEventListener('click',submitBooking);"
-        "  const today=new Date();document.getElementById('booking_date').value=today.toISOString().slice(0,10);loadSlots();"
+        "  const today=new Date();"
+        "  const todayIso=today.toISOString().slice(0,10);"
+        "  const dateInput=document.getElementById('booking_date');"
+        "  dateInput.value=todayIso;"
+        "  dateInput.setAttribute('min', todayIso);"
+        "  loadSlots();"
         "}"
         
         "function renderDefaultForm(){"
@@ -3225,10 +3220,17 @@ def booking_form(bot_id: str, org_id: str, bot_key: Optional[str] = None):
         "  try{"
         "    const r=await fetch(url,{headers:h});"
         "    if(!r.ok){st.textContent='Error loading slots';return;}"
-        "    const d=await r.json();const slots=d.slots||[];"
-        "    if(slots.length===0){st.textContent='No available slots for this date';return;}"
+        "    const d=await r.json();"
+        "    const rawSlots=d.slots||[];"
+        "    const now=new Date();"
+        "    const upcoming=rawSlots.filter(s=>{"
+        "      try{"
+        "        return new Date(dt+'T'+(s.start_time||'00:00:00'))>now;"
+        "      }catch(e){return true;}"
+        "    });"
+        "    if(upcoming.length===0){st.textContent='No upcoming slots for this date';return;}"
         "    st.style.display='none';"
-        "    slots.forEach(s=>{"
+        "    upcoming.forEach(s=>{"
         "      const b=document.createElement('button');b.type='button';b.className='time-slot';"
         "      const [h,m]=s.start_time.split(':');"
         "      const hNum=parseInt(h,10);const ampm=hNum>=12?'PM':'AM';const h12=hNum%12||12;"
@@ -3298,40 +3300,62 @@ def reschedule_form(bot_id: str, org_id: str, bot_key: Optional[str] = None):
         "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1,maximum-scale=1\">"
         "<style>"
         "*{margin:0;padding:0;box-sizing:border-box}"
-        "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:linear-gradient(135deg,#22c1c3 0%,#fdbb2d 100%);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:12px}"
-        ".container{background:#fff;border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,0.3);max-width:640px;width:100%;padding:32px;max-height:90vh;overflow-y:auto}"
-        ".header{margin-bottom:28px}"
-        ".header h1{font-size:28px;font-weight:700;color:#1a1a1a;margin-bottom:8px}"
-        ".header p{font-size:14px;color:#666}"
+        "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f6f7f9;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:12px}"
+        ".container{background:#fff;border-radius:14px;box-shadow:0 12px 32px rgba(0,0,0,0.12);max-width:560px;width:100%;padding:24px;max-height:92vh;overflow-y:auto;overflow-x:hidden}"
+        ".header{margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}"
+        ".header h1{font-size:22px;font-weight:800;color:#111;margin-bottom:2px}"
+        ".header p{font-size:12px;color:#666}"
+        ".steps{display:flex;gap:6px;align-items:center;overflow-x:auto;-webkit-overflow-scrolling:touch;padding-bottom:4px}"
+        ".step{padding:6px 10px;border-radius:999px;background:#e9eaec;color:#444;font-size:12px;font-weight:700}"
+        ".step.active{background:#111;color:#fff}"
         ".form-group{margin-bottom:20px}"
         ".form-group label{display:block;font-size:13px;font-weight:600;color:#333;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.5px}"
-        ".form-group input,.form-group select{width:100%;padding:12px 14px;border:2px solid #e0e0e0;border-radius:8px;font-size:14px;transition:all 0.3s ease;font-family:inherit}"
+        ".form-group input,.form-group select{width:100%;padding:12px 14px;border:2px solid #e5e7eb;border-radius:10px;font-size:14px;transition:all 0.3s ease;font-family:inherit;background:#fafafa}"
         ".form-group input:focus,.form-group select:focus{outline:none;border-color:#22c1c3;box-shadow:0 0 0 3px rgba(34,193,195,0.15)}"
-        ".section{margin-bottom:24px;padding-bottom:24px;border-bottom:1px solid #e5e5e5}"
+        ".section{margin-bottom:16px;padding:16px;border:1px solid #eee;border-radius:12px;background:#fff}"
         ".section:last-of-type{border-bottom:none}"
         ".section-title{font-size:16px;font-weight:700;color:#333;margin-bottom:16px}"
-        ".time-slots{display:grid;grid-template-columns:repeat(auto-fill,minmax(80px,1fr));gap:8px;margin-top:12px}"
-        ".time-slot{padding:10px;border:2px solid #e0e0e0;border-radius:8px;background:#f9f9f9;cursor:pointer;text-align:center;font-size:13px;font-weight:600;color:#333;transition:all 0.2s ease}"
-        ".time-slot:hover{border-color:#22c1c3;background:#eefafc}"
+        ".grid{display:grid;grid-template-columns:1fr;gap:16px}"
+        "@media(min-width:760px){.grid{grid-template-columns:1fr 1fr}}"
+        ".time-slots{display:grid;grid-template-columns:repeat(auto-fill,minmax(92px,1fr));gap:10px;margin-top:12px}"
+        ".time-slot{padding:12px;border:2px solid #e5e7eb;border-radius:12px;background:#f9fafb;cursor:pointer;text-align:center;font-size:13px;font-weight:700;color:#333;transition:all 0.2s ease}"
+        ".time-slot:hover{border-color:#111;background:#f2f4f7}"
         ".time-slot.selected{background:#22c1c3;color:#fff;border-color:#22c1c3}"
+        ".time-slot .cap{display:block;font-size:11px;color:#666;margin-top:4px}"
         ".slot-status{font-size:13px;color:#666;padding:12px;text-align:center;background:#f5f5f5;border-radius:8px;margin-top:12px}"
-        ".button-group{display:flex;gap:12px;margin-top:28px}"
-        "#submit{flex:1;padding:14px 24px;background:linear-gradient(135deg,#22c1c3 0%,#fdbb2d 100%);color:#fff;border:none;border-radius:8px;font-size:16px;font-weight:700;cursor:pointer;transition:all 0.3s ease;text-transform:uppercase;letter-spacing:0.5px}"
-        "#submit:hover{transform:translateY(-2px);box-shadow:0 10px 25px rgba(34,193,195,0.4)}"
-        "#submit:disabled{opacity:0.6;cursor:not-allowed}"
+        ".button-group{display:flex;gap:12px;margin-top:24px}"
+        ".btn{padding:12px 18px;border:none;border-radius:10px;font-size:14px;font-weight:800;cursor:pointer;transition:all 0.25s ease}"
+        ".btn.primary{flex:1;background:#22c1c3;color:#fff}"
+        ".btn.secondary{background:#374151;color:#fff}"
+        ".btn:hover{transform:translateY(-1px)}"
+        ".btn:disabled{opacity:0.6;cursor:not-allowed}"
         "#out{margin-top:16px;padding:14px;border-radius:8px;font-size:14px;font-weight:600;display:none}"
         "#out.success{background:#d1fae5;color:#065f46;border-left:4px solid #10b981;display:block}"
         "#out.error{background:#fee2e2;color:#7f1d1d;border-left:4px solid #dc2626;display:block}"
         "#out.info{background:#dbeafe;color:#1e40af;border-left:4px solid #3b82f6;display:block}"
+        "@media(max-width:480px){"
+        "  .container{padding:16px}"
+        "  .header h1{font-size:20px}"
+        "  .section{padding:12px}"
+        "  .form-group input,.form-group select{padding:10px 12px}"
+        "  .time-slots{grid-template-columns:repeat(auto-fill,minmax(80px,1fr));gap:8px}"
+        "  .button-group{flex-wrap:wrap}"
+        "  .btn{width:100%}"
+        "}"
+        "@media(max-width:360px){"
+        "  .time-slots{grid-template-columns:repeat(auto-fill,minmax(72px,1fr));gap:6px}"
+        "  .step{padding:5px 8px;font-size:11px}"
+        "}"
         "</style>"
         "</head><body>"
         "<div class=\"container\">"
-        "<div class=\"header\"><h1>Reschedule Appointment</h1><p>Enter your appointment ID and pick a new time</p></div>"
+        "<div class=\"header\"><div><h1>Reschedule Appointment</h1><p>Enter your appointment ID and pick a new time</p></div><div class=\"steps\"><div class=\"step active\" id=\"st1\">1. Enter ID</div><div class=\"step\" id=\"st2\">2. Review</div><div class=\"step\" id=\"st3\">3. New Time</div></div></div>"
         "<div id=\"form-container\">"
         "<div class=\"section\">"
         "<div class=\"form-group\"><label>Appointment ID</label><input id=\"booking_id\" type=\"number\" placeholder=\"e.g., 123\"></div>"
-        "<div class=\"button-group\"><button id=\"load\" type=\"button\">Load Details</button></div>"
+        "<div class=\"button-group\"><button id=\"load\" type=\"button\" class=\"btn primary\">Load Details</button></div>"
         "</div>"
+        "<div class=\"grid\">"
         "<div class=\"section\" id=\"details\" style=\"display:none\">"
         "<div class=\"section-title\">Current Details</div>"
         "<div id=\"current\"></div>"
@@ -3339,17 +3363,19 @@ def reschedule_form(bot_id: str, org_id: str, bot_key: Optional[str] = None):
         "<div class=\"section\" id=\"rescheduler\" style=\"display:none\">"
         "<div class=\"section-title\">Select Date, Time & Doctor/Service</div>"
         "<div class=\"form-group\"><label>Date</label><input id=\"booking_date\" type=\"date\"></div>"
+        "<div class=\"form-group\"><label>Search</label><input id=\"resource_search\" type=\"text\" placeholder=\"Search doctor/service\"></div>"
         "<div class=\"form-group\"><label>Doctor/Service</label><select id=\"resource_select\"><option value=\"\">Current</option></select></div>"
         "<div class=\"time-slots\" id=\"slots\"></div>"
         "<div class=\"slot-status\" id=\"slot-status\" style=\"display:none\"></div>"
         "</div>"
-        "<div class=\"button-group\" id=\"actions\" style=\"display:none\"><button id=\"submit\" type=\"button\">Reschedule</button></div>"
+        "</div>"
+        "<div class=\"button-group\" id=\"actions\" style=\"display:none\"><button id=\"submit\" type=\"button\" class=\"btn primary\" disabled>Reschedule</button></div>"
         "<div id=\"out\"></div>"
         "</div>"
         "</div>"
         "<script>"
         "const ORG='" + org_id + "',BOT='" + bot_id + "',BOT_KEY='" + (bot_key or '') + "',API='" + api_url + "';"
-        "let current=null,chosen=null,resourcesByType={},resourceIndex=null;"
+        "let current=null,chosen=null,resourcesByType={},resourceIndex=null,allResources=[];"
         "function showMsg(t,ty){const o=document.getElementById('out');o.textContent=t;o.className=ty;o.style.display='block';}"
         "async function loadResources(){"
         "  try{"
@@ -3357,11 +3383,20 @@ def reschedule_form(bot_id: str, org_id: str, bot_key: Optional[str] = None):
         "    const r=await fetch(API+'/api/resources/'+BOT,{headers:h});"
         "    if(!r.ok)return;"
         "    const data=await r.json();"
-        "    resourcesByType=(data.resources||[]).reduce((acc,r)=>{acc[r.resource_type]=acc[r.resource_type]||[];acc[r.resource_type].push(r);return acc;},{});"
-        "    resourceIndex=(data.resources||[]).reduce((m,r)=>{m.ids[r.id]=r;if(r.resource_code)m.codes[r.resource_code]=r;m.names[(r.resource_name||'').toLowerCase()]=r;return m;},{ids:{},codes:{},names:{}});"
+        "    allResources=(data.resources||[]);"
+        "    resourcesByType=allResources.reduce((acc,r)=>{acc[r.resource_type]=acc[r.resource_type]||[];acc[r.resource_type].push(r);return acc;},{});"
+        "    resourceIndex=allResources.reduce((m,r)=>{m.ids[r.id]=r;if(r.resource_code)m.codes[r.resource_code]=r;m.names[(r.resource_name||'').toLowerCase()]=r;return m;},{ids:{},codes:{},names:{}});"
         "    const sel=document.getElementById('resource_select');"
         "    sel.innerHTML='<option value=\"\">Current</option>';"
-        "    (data.resources||[]).forEach(r=>{const opt=document.createElement('option');opt.value=r.id;opt.textContent=r.resource_name;sel.appendChild(opt);});"
+        "    allResources.forEach(r=>{const opt=document.createElement('option');opt.value=r.id;opt.textContent=r.resource_name;sel.appendChild(opt);});"
+        "    const rs=document.getElementById('resource_search');"
+        "    if(rs){"
+        "      rs.oninput=()=>{"
+        "        const q=(rs.value||'').toLowerCase();"
+        "        sel.innerHTML='<option value=\"\">Current</option>';"
+        "        allResources.filter(r=>((r.resource_name||'').toLowerCase().includes(q)||((r.resource_code||'').toLowerCase().includes(q)))).forEach(r=>{const opt=document.createElement('option');opt.value=r.id;opt.textContent=r.resource_name;sel.appendChild(opt);});"
+        "      };"
+        "    }"
         "  }catch(e){}"
         "}"
         "async function loadBooking(){"
@@ -3377,10 +3412,26 @@ def reschedule_form(bot_id: str, org_id: str, bot_key: Optional[str] = None):
         "    const r=await fetch(API+'/api/booking/'+id,{headers:h});"
         "    if(!r.ok){showMsg('Booking not found','error'); if(window.parent&&window.parent.postMessage){window.parent.postMessage({type:'RESCHEDULE_BLOCKED',message:'Booking not found'},'*');} return;}"
         "    current=await r.json();"
+        "    document.getElementById('st1').classList.add('active');"
+        "    document.getElementById('st2').classList.add('active');"
         "    try{"
         "      var status=(current.status||'').toLowerCase();"
         "      var end=new Date((current.booking_date||'')+'T'+(current.end_time||'00:00:00'));"
         "      var now=new Date();"
+        "      if(status==='cancelled'){"
+        "        showMsg('Cancelled appointment cannot be rescheduled.','error');"
+        "        if(window.parent&&window.parent.postMessage){window.parent.postMessage({type:'RESCHEDULE_BLOCKED',message:'Cancelled appointment cannot be rescheduled.'},'*');}"
+        "        document.getElementById('details').style.display='block';"
+        "        document.getElementById('rescheduler').style.display='none';"
+        "        document.getElementById('actions').style.display='none';"
+        "        const cur=document.getElementById('current');"
+        "        cur.innerHTML='<div class=\"form-group\"><label>Name</label><input type=\"text\" value=\"'+(current.customer_name||'')+'\" disabled></div>'+"
+        "                     '<div class=\"form-group\"><label>Email</label><input type=\"text\" value=\"'+(current.customer_email||'')+'\" disabled></div>'+"
+        "                     '<div class=\"form-group\"><label>Current Doctor/Service</label><input type=\"text\" value=\"'+(current.resource_name||'')+'\" disabled></div>'+"
+        "                     '<div class=\"form-group\"><label>Current Date</label><input type=\"text\" value=\"'+(current.booking_date||'')+'\" disabled></div>'+"
+        "                     '<div class=\"form-group\"><label>Current Time</label><input type=\"text\" value=\"'+(current.start_time||'')+' - '+(current.end_time||'')+'\" disabled></div>';"
+        "        return;"
+        "      }"
         "      if(status==='completed' || (end && !isNaN(end.getTime()) && end.getTime()<=now.getTime())){"
         "        showMsg('Past appointment cannot be rescheduled.','error');"
         "        if(window.parent&&window.parent.postMessage){window.parent.postMessage({type:'RESCHEDULE_BLOCKED',message:'Past appointment cannot be rescheduled.'},'*');}"
@@ -3405,7 +3456,12 @@ def reschedule_form(bot_id: str, org_id: str, bot_key: Optional[str] = None):
         "                 '<div class=\"form-group\"><label>Current Time</label><input type=\"text\" value=\"'+(current.start_time||'')+' - '+(current.end_time||'')+'\" disabled></div>';"
         "    document.getElementById('rescheduler').style.display='block';"
         "    document.getElementById('actions').style.display='flex';"
-        "    const d=document.getElementById('booking_date');d.value=(current.booking_date||new Date().toISOString().slice(0,10));"
+        "    const d=document.getElementById('booking_date');"
+        "    const todayIso=new Date().toISOString().slice(0,10);"
+        "    d.value=(current.booking_date||todayIso);"
+        "    d.setAttribute('min', todayIso);"
+        "    document.getElementById('st3').classList.add('active');"
+        "    document.getElementById('submit').disabled=true;"
         "    await loadResources();"
         "    try{"
         "      var end=new Date((current.booking_date||'')+'T'+(current.end_time||'00:00:00'));"
@@ -3432,17 +3488,25 @@ def reschedule_form(bot_id: str, org_id: str, bot_key: Optional[str] = None):
         "    const r=await fetch(url,{headers:h});"
         "    if(!r.ok){st.textContent='Error loading slots';return;}"
         "    const d=await r.json();const slots=d.slots||[];"
-        "    if(slots.length===0){st.textContent='No available slots for this date';return;}"
+        "    const now=new Date();"
+        "    const upcoming=(slots||[]).filter(s=>{"
+        "      try{"
+        "        return new Date(dt+'T'+(s.start_time||'00:00:00'))>now;"
+        "      }catch(e){return true;}"
+        "    });"
+        "    if(upcoming.length===0){st.textContent='No upcoming slots for this date';return;}"
         "    st.style.display='none';"
-        "    slots.forEach(s=>{"
+        "    upcoming.forEach(s=>{"
         "      const b=document.createElement('button');b.type='button';b.className='time-slot';"
         "      const [h0,m0]=s.start_time.split(':');"
         "      const hNum=parseInt(h0,10);const ampm=hNum>=12?'PM':'AM';const h12=hNum%12||12;"
-        "      b.textContent=h12+':'+(m0||'00')+' '+ampm;"
+        "      const cap=s.available_capacity;"
+        "      b.innerHTML=h12+':'+(m0||'00')+' '+ampm+(cap?('<span class=\"cap\">'+cap+' left</span>'):'');"
         "      b.onclick=()=>{"
         "        chosen={start:dt+'T'+s.start_time,end:dt+'T'+s.end_time};"
         "        document.querySelectorAll('.time-slot').forEach(x=>x.classList.remove('selected'));"
         "        b.classList.add('selected');"
+        "        document.getElementById('submit').disabled=false;"
         "      };"
         "      el.appendChild(b);"
         "    });"
@@ -3647,7 +3711,7 @@ def booking_cancel(bot_id: str, body: CancelBody, authorization: Optional[str] =
         _ensure_oauth_table(conn)
         with conn.cursor() as cur:
             # Get booking from bookings table
-            cur.execute("select external_event_id from bookings where id=%s and bot_id=%s", (body.appointment_id, bot_id))
+            cur.execute("select coalesce(calendar_event_id, external_event_id) from bookings where id=%s and bot_id=%s", (body.appointment_id, bot_id))
             row = cur.fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail="booking not found")
@@ -3696,7 +3760,9 @@ def booking_list(bot_id: str, org_id: str, authorization: Optional[str] = Header
             cur.execute("""
                 select b.id, b.customer_name, b.booking_date, b.start_time, b.end_time, 
                        b.status, b.customer_email, b.customer_phone, b.notes, b.form_data,
-                       b.external_event_id, r.resource_name
+                       coalesce(b.calendar_event_id, b.external_event_id) as external_event_id,
+                       b.calendar_event_id,
+                       r.resource_name
                 from bookings b
                 left join booking_resources r on b.resource_id = r.id
                 where b.bot_id = %s
@@ -3707,14 +3773,14 @@ def booking_list(bot_id: str, org_id: str, authorization: Optional[str] = Header
             # Convert bookings to response format
             rows = []
             for db in bookings:
-                booking_id, cust_name, booking_date, start_time, end_time, status, email, phone, notes, form_data, ext_event_id, resource_name = db
+                booking_id, cust_name, booking_date, start_time, end_time, status, email, phone, notes, form_data, ext_event_id, cal_event_id, resource_name = db
                 summary = f"Appointment: {cust_name}"
                 if resource_name:
                     summary += f" with {resource_name}"
                 start_iso = f"{booking_date}T{start_time}"
                 end_iso = f"{booking_date}T{end_time}"
                 attendees_json = {"name": cust_name, "email": email, "phone": phone, "notes": notes, "form_data": form_data}
-                rows.append((booking_id, summary, start_iso, end_iso, ext_event_id, status, attendees_json))
+                rows.append((booking_id, summary, start_iso, end_iso, ext_event_id, status, attendees_json, cal_event_id))
             cur.execute(
                 "select calendar_id, access_token_enc, refresh_token_enc, token_expiry from bot_calendar_oauth where (org_id=%s or org_id::text=%s) and bot_id=%s and provider=%s",
                 (normalize_org_id(org_id), org_id, bot_id, "google"),
@@ -3796,6 +3862,7 @@ def booking_list(bot_id: str, org_id: str, authorization: Optional[str] = Header
                 "form_data": info.get("form_data"),
                 "event_description": event_description,
                 "info": info,
+                "calendar_event_id": r[7],
             })
         return {"appointments": appts}
     finally:
