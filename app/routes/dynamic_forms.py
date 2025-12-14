@@ -1078,7 +1078,7 @@ def get_booking_by_id(booking_id: int):
         with conn.cursor() as cur:
             cur.execute("""
                 select id, org_id, bot_id, customer_name, customer_email, customer_phone, 
-                       booking_date, start_time, end_time, resource_name, form_data, 
+                       booking_date, start_time, end_time, resource_id, resource_name, form_data, 
                        status, notes, calendar_event_id, created_at
                 from bookings
                 where id = %s
@@ -1087,6 +1087,20 @@ def get_booking_by_id(booking_id: int):
             row = cur.fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail="Booking not found")
+            
+            try:
+                from datetime import datetime as _dt
+                bd = row[6]
+                et = row[8]
+                now = _dt.now()
+                end_dt = _dt.combine(bd, et)
+                if end_dt <= now and (row[12] or '').lower() != 'completed':
+                    with conn.cursor() as cur2:
+                        cur2.execute("update bookings set status='completed', updated_at=now() where id=%s", (row[0],))
+                    row = list(row)
+                    row[12] = 'completed'
+            except Exception:
+                pass
             
             return {
                 "id": row[0],
@@ -1098,14 +1112,142 @@ def get_booking_by_id(booking_id: int):
                 "booking_date": str(row[6]),
                 "start_time": str(row[7]),
                 "end_time": str(row[8]),
-                "resource_name": row[9],
-                "form_data": row[10],
-                "status": row[11],
-                "notes": row[12],
-                "calendar_event_id": row[13],
-                "calendar_synced": row[13] is not None,
-                "created_at": row[14].isoformat()
+                "resource_id": str(row[9]) if row[9] else None,
+                "resource_name": row[10],
+                "form_data": row[11],
+                "status": row[12],
+                "notes": row[13],
+                "calendar_event_id": row[14],
+                "calendar_synced": row[14] is not None,
+                "created_at": row[15].isoformat()
             }
+    finally:
+        conn.close()
+
+class BookingRescheduleBody(BaseModel):
+    org_id: str
+    booking_date: date
+    start_time: time
+    end_time: time
+    resource_id: Optional[str] = None
+
+@router.post("/bookings/{booking_id}/reschedule")
+def reschedule_booking(booking_id: int, body: BookingRescheduleBody):
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                select bot_id, customer_name, customer_email, booking_date, start_time, end_time, status, resource_id, resource_name, calendar_event_id
+                from bookings
+                where id = %s
+            """, (booking_id,))
+            b = cur.fetchone()
+            if not b:
+                raise HTTPException(status_code=404, detail="Booking not found")
+            bot_id, cust_name, cust_email, cur_date, cur_start, cur_end, cur_status, old_res_id, old_res_name, ext_event_id = b
+            
+            try:
+                from datetime import datetime as _dt
+                now = _dt.now()
+                cur_end_dt = _dt.combine(cur_date, cur_end)
+                if cur_end_dt <= now:
+                    with conn.cursor() as cur2:
+                        cur2.execute("update bookings set status='completed', updated_at=now() where id=%s", (booking_id,))
+                    conn.commit()
+                    raise HTTPException(status_code=409, detail="Appointment already completed; only upcoming appointments can be rescheduled")
+            except HTTPException:
+                raise
+            except Exception:
+                pass
+            
+            new_res_id = body.resource_id or old_res_id
+            new_res_name = old_res_name
+            if new_res_id:
+                cur.execute("select resource_name from booking_resources where id=%s", (new_res_id,))
+                r = cur.fetchone()
+                new_res_name = r[0] if r else old_res_name
+            
+            if new_res_id:
+                cur.execute("select check_resource_capacity(%s, %s, %s, %s)", (new_res_id, body.booking_date, body.start_time, body.end_time))
+                if not cur.fetchone()[0]:
+                    raise HTTPException(status_code=409, detail="No capacity available for this resource and time")
+            else:
+                cur.execute("select check_slot_capacity(%s, %s, %s, %s)", (bot_id, body.booking_date, body.start_time, body.end_time))
+                if not cur.fetchone()[0]:
+                    raise HTTPException(status_code=409, detail="No capacity available for this time slot")
+            
+            cur.execute("""
+                select timezone 
+                from bot_booking_settings
+                where bot_id = %s
+            """, (bot_id,))
+            s = cur.fetchone()
+            timezone = s[0] if s and s[0] else None
+            
+            start_iso = f"{body.booking_date}T{body.start_time}"
+            end_iso = f"{body.booking_date}T{body.end_time}"
+            
+            try:
+                from datetime import datetime as _dt
+                now_tz = _dt.now()
+                if timezone:
+                    try:
+                        from zoneinfo import ZoneInfo as _ZoneInfo
+                        now_tz = _dt.now(_ZoneInfo(timezone))
+                    except Exception:
+                        pass
+                proposed_end = _dt.combine(body.booking_date, body.end_time)
+                if timezone:
+                    try:
+                        from zoneinfo import ZoneInfo as _ZoneInfo
+                        proposed_end = proposed_end.replace(tzinfo=_ZoneInfo(timezone))
+                    except Exception:
+                        pass
+                if proposed_end <= now_tz:
+                    raise HTTPException(status_code=409, detail="Cannot reschedule to a past time")
+            except HTTPException:
+                raise
+            except Exception:
+                pass
+            
+            cur.execute("select calendar_id, access_token_enc, refresh_token_enc from bot_calendar_oauth where bot_id=%s and provider='google'", (bot_id,))
+            cal = cur.fetchone()
+            calendar_synced = False
+            if ext_event_id and cal:
+                from app.services.calendar_google import _decrypt, build_service_from_tokens, update_event_oauth
+                at = _decrypt(cal[1]) if cal[1] else None
+                rt = _decrypt(cal[2]) if cal[2] else None
+                svc = build_service_from_tokens(at or "", rt, None)
+                if svc:
+                    patch = {"start": {"dateTime": start_iso}, "end": {"dateTime": end_iso}}
+                    ok = update_event_oauth(svc, (cal[0] or "primary"), ext_event_id, patch)
+                    calendar_synced = bool(ok)
+            
+            cur.execute("""
+                update bookings 
+                set booking_date=%s, start_time=%s, end_time=%s, resource_id=%s, resource_name=%s, status='confirmed'
+                where id=%s
+                returning id, customer_name, customer_email, booking_date, start_time, end_time, resource_id, resource_name
+            """, (body.booking_date, body.start_time, body.end_time, new_res_id, new_res_name, booking_id))
+            upd = cur.fetchone()
+            conn.commit()
+            return {
+                "id": upd[0],
+                "customer_name": upd[1],
+                "customer_email": upd[2],
+                "booking_date": str(upd[3]),
+                "start_time": str(upd[4]),
+                "end_time": str(upd[5]),
+                "resource_id": str(upd[6]) if upd[6] else None,
+                "resource_name": upd[7],
+                "calendar_event_id": ext_event_id,
+                "calendar_synced": calendar_synced
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
     finally:
         conn.close()
 
