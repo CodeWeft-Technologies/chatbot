@@ -86,7 +86,15 @@ def _llm_intent_detection(message: str, history: list = None) -> dict:
         context = "\n".join([f"{'User' if h.get('role') == 'user' else 'Bot'}: {h.get('content', '')}" for h in recent])
     
     # LLM prompt for intent detection
-    prompt = f"""Analyze if this message is related to booking/scheduling an appointment, including rescheduling, cancellation, or status checks. Treat common misspellings (e.g., "reschudle", "reshedule", "reschdule") as valid.
+    prompt = f"""You are analyzing if a user message is SPECIFICALLY requesting to book, reschedule, cancel, or check an appointment. 
+
+IMPORTANT: Only return is_booking=true if the user is EXPLICITLY trying to:
+1. Book/schedule a new appointment
+2. Reschedule an existing appointment  
+3. Cancel an appointment
+4. Check appointment status
+
+General questions, greetings, or asking about information are NOT booking intents, even if the bot is an appointment agent.
 
 Previous conversation:
 {context if context else "(No previous messages)"}
@@ -101,16 +109,20 @@ Respond ONLY with a JSON object (no markdown, no explanation):
   "reasoning": "brief explanation"
 }}
 
-Examples:
-- "I need to see the doctor" → {{"is_booking": true, "action": "book", "confidence": 0.9}}
-- "Can I come tomorrow?" → {{"is_booking": true, "action": "book", "confidence": 0.85}}
-- "मैं कल आऊंगा" (I'll come tomorrow) → {{"is_booking": true, "action": "book", "confidence": 0.9}}
-- "What are your services?" → {{"is_booking": false, "action": null, "confidence": 0.9}}
-- "I booked a hotel" → {{"is_booking": false, "action": null, "confidence": 0.85}}
-- "reschudle my appointment to tomorrow 3pm" → {{"is_booking": true, "action": "reschedule", "confidence": 0.9}}
-- "pls re schedule apointment" → {{"is_booking": true, "action": "reschedule", "confidence": 0.85}}
-- "cancel my booking id 123" → {{"is_booking": true, "action": "cancel", "confidence": 0.9}}
-- "check my appointment status" → {{"is_booking": true, "action": "status", "confidence": 0.8}}"""
+BOOKING Examples (is_booking=true):
+- "I need to book an appointment" → {{"is_booking": true, "action": "book", "confidence": 0.95}}
+- "Can I schedule for tomorrow 3pm?" → {{"is_booking": true, "action": "book", "confidence": 0.9}}
+- "reschedule my appointment" → {{"is_booking": true, "action": "reschedule", "confidence": 0.95}}
+- "cancel my booking" → {{"is_booking": true, "action": "cancel", "confidence": 0.95}}
+
+NON-BOOKING Examples (is_booking=false):
+- "hello" → {{"is_booking": false, "action": null, "confidence": 0.95}}
+- "hi" → {{"is_booking": false, "action": null, "confidence": 0.95}}
+- "what is your name" → {{"is_booking": false, "action": null, "confidence": 0.95}}
+- "what can you do" → {{"is_booking": false, "action": null, "confidence": 0.95}}
+- "who is your owner" → {{"is_booking": false, "action": null, "confidence": 0.95}}
+- "what are your services" → {{"is_booking": false, "action": null, "confidence": 0.95}}
+- "tell me about your company" → {{"is_booking": false, "action": null, "confidence": 0.95}}"""
 
     try:
         response = client.chat.completions.create(
@@ -162,6 +174,58 @@ def _detect_booking_intent(message: str, history: list = None) -> dict:
     """
     import re
     msg_lower = message.lower()
+    
+    # Explicit non-booking keywords - these should NEVER be booking intents (Multi-language)
+    non_booking_keywords = [
+        # Greetings (English + Indian languages)
+        r'\b(hello|hi|hey|greetings|good morning|good afternoon|good evening)\b',
+        r'\b(नमस्ते|हैलो|हाय|शुभ प्रभात|नमस्कार)\b',  # Hindi
+        r'\b(வணக்கம்|ஹலோ|ஹாய்)\b',  # Tamil
+        r'\b(నమస్కారం|హలో|హాయ్)\b',  # Telugu
+        r'\b(ನಮಸ್ಕಾರ|ಹಲೋ|ಹಾಯ್)\b',  # Kannada
+        r'\b(നമസ്കാരം|ഹലോ|ഹായ്)\b',  # Malayalam
+        
+        # Question words (English)
+        r'\b(what is|what are|who is|who are|where is|where are|when is|how is|why is)\b',
+        r'\b(tell me|show me|explain|describe|info|information)\b',
+        
+        # Question words (Hindi)
+        r'\b(क्या है|कौन है|कहाँ है|कब है|कैसे|क्यों|बताओ|बताइए)\b',
+        
+        # Question words (Tamil)
+        r'\b(என்ன|யார்|எங்கே|எப்போது|எப்படி|ஏன்|சொல்லுங்கள்)\b',
+        
+        # Question words (Telugu)
+        r'\b(ఏమిటి|ఎవరు|ఎక్కడ|ఎప్పుడు|ఎలా|ఎందుకు|చెప్పండి)\b',
+        
+        # Question words (Kannada)
+        r'\b(ಏನು|ಯಾರು|ಎಲ್ಲಿ|ಯಾವಾಗ|ಹೇಗೆ|ಯಾಕೆ|ಹೇಳಿ)\b',
+        
+        # Question words (Malayalam)
+        r'\b(എന്താണ്|ആരാണ്|എവിടെ|എപ്പോൾ|എങ്ങനെ|എന്തുകൊണ്ട്|പറയൂ)\b',
+        
+        # Common non-booking topics (English + transliterations)
+        r'\b(your name|your owner|you do|you can|about you|who you|what you)\b',
+        r'\b(help|support|contact|email|phone|address|location)\b',
+        r'\b(naam|name|owner|company|business|service|services)\b',
+        
+        # Common non-booking topics (Hindi)
+        r'\b(नाम|मालिक|कंपनी|सेवा|सेवाएं|मदद|संपर्क)\b',
+    ]
+    
+    # Check if it's explicitly a non-booking question
+    is_non_booking = any(re.search(pattern, msg_lower, re.IGNORECASE) for pattern in non_booking_keywords)
+    
+    # If it's clearly NOT a booking question, return immediately
+    if is_non_booking and len(message.split()) <= 10:  # Short questions
+        return {
+            'is_booking': False,
+            'action': None,
+            'has_time': False,
+            'has_appointment_id': False,
+            'confidence': 0.95,
+            'detection_method': 'regex-negative'
+        }
     
     # Booking keywords (English + Indian languages)
     booking_keywords = [
@@ -311,7 +375,7 @@ def _detect_booking_intent(message: str, history: list = None) -> dict:
             confidence = min(0.95, confidence + 0.15)
     
     return {
-        'is_booking': is_booking or confidence >= 0.5,
+        'is_booking': is_booking,  # Only True if explicit booking keywords found
         'action': action,
         'has_time': has_time,
         'has_appointment_id': has_appointment_id,
@@ -342,7 +406,7 @@ def _hybrid_intent_detection(message: str, history: list = None) -> dict:
     """
     # Step 1: Fast regex detection
     regex_result = _detect_booking_intent(message, history)
-    regex_confidence = regex_result['confidence']
+    regex_confidence = regex_result.get('confidence', 0.0)
     
     # Detect language from message
     detected_lang = 'en'
@@ -379,32 +443,32 @@ def _hybrid_intent_detection(message: str, history: list = None) -> dict:
     # If both agree, boost confidence
     # If they disagree, trust higher confidence source
     
-    if regex_result['is_booking'] == llm_result['is_booking']:
+    if regex_result.get('is_booking', False) == llm_result.get('is_booking', False):
         # Agreement: boost confidence
         final_confidence = (regex_confidence * 0.35) + (llm_confidence * 0.65)
         final_confidence = min(0.98, final_confidence + 0.10)  # Bonus for agreement
-        final_action = llm_result['action'] or regex_result['action']
-        final_is_booking = regex_result['is_booking']
+        final_action = llm_result.get('action') or regex_result.get('action')
+        final_is_booking = regex_result.get('is_booking', False)
         method = 'hybrid-agreement'
     else:
         # Disagreement: trust higher confidence
         if llm_confidence > regex_confidence:
             final_confidence = llm_confidence * 0.90  # Slight penalty for disagreement
-            final_action = llm_result['action']
-            final_is_booking = llm_result['is_booking']
+            final_action = llm_result.get('action')
+            final_is_booking = llm_result.get('is_booking', False)
             method = 'hybrid-llm'
         else:
             final_confidence = regex_confidence * 0.90
-            final_action = regex_result['action']
-            final_is_booking = regex_result['is_booking']
+            final_action = regex_result.get('action')
+            final_is_booking = regex_result.get('is_booking', False)
             method = 'hybrid-regex'
     
     return {
         'is_booking': final_is_booking,
         'action': final_action,
         'confidence': final_confidence,
-        'has_time': regex_result['has_time'],
-        'has_appointment_id': regex_result['has_appointment_id'],
+        'has_time': regex_result.get('has_time', False),
+        'has_appointment_id': regex_result.get('has_appointment_id', False),
         'language': detected_lang,
         'detection_method': method,
         'llm_reasoning': llm_result.get('reasoning', '')
@@ -475,149 +539,6 @@ def _cleanup_old_conversations(conn):
             )
     except Exception:
         pass
-
-
-def _detect_booking_intent(message: str, history: list = None) -> dict:
-    """
-    Smart multi-language booking intent detection.
-    Supports: English, Hindi, Tamil, Telugu, Kannada, Malayalam, Bengali, Marathi, Gujarati, Punjabi, Urdu
-    
-    Returns: {
-        'is_booking': bool,
-        'intent': 'new_booking'|'reschedule'|'cancel'|'check_status'|None,
-        'has_time': bool,
-        'has_appointment_id': bool,
-        'confidence': float,
-        'language': str
-    }
-    """
-    import re
-    msg_lower = message.lower()
-    
-    # Detect language
-    detected_lang = 'en'  # default
-    if any(ord(c) >= 0x0900 and ord(c) <= 0x097F for c in message):  # Devanagari
-        detected_lang = 'hi'
-    elif any(ord(c) >= 0x0B80 and ord(c) <= 0x0BFF for c in message):  # Tamil
-        detected_lang = 'ta'
-    elif any(ord(c) >= 0x0C00 and ord(c) <= 0x0C7F for c in message):  # Telugu
-        detected_lang = 'te'
-    elif any(ord(c) >= 0x0C80 and ord(c) <= 0x0CFF for c in message):  # Kannada
-        detected_lang = 'kn'
-    elif any(ord(c) >= 0x0D00 and ord(c) <= 0x0D7F for c in message):  # Malayalam
-        detected_lang = 'ml'
-    elif any(ord(c) >= 0x0980 and ord(c) <= 0x09FF for c in message):  # Bengali
-        detected_lang = 'bn'
-    elif any(ord(c) >= 0x0A80 and ord(c) <= 0x0AFF for c in message):  # Gujarati
-        detected_lang = 'gu'
-    elif any(ord(c) >= 0x0A00 and ord(c) <= 0x0A7F for c in message):  # Punjabi
-        detected_lang = 'pa'
-    
-    # Booking keywords in multiple languages
-    booking_keywords = {
-        # English
-        'book', 'booking', 'schedule', 'appointment', 'reserve', 'slot', 'meeting',
-        # Hindi (Devanagari)
-        'बुक', 'बुकिंग', 'अपॉइंटमेंट', 'समय', 'मिलना', 'नियुक्ति',
-        # Hindi (Romanized)
-        'appoint', 'milna', 'samay',
-        # Tamil
-        'பதிவு', 'முன்பதிவு', 'சந்திப்பு', 'நேரம்',
-        # Telugu
-        'బుక్', 'అపాయింట్మెంట్', 'సమయం', 'కాలం',
-        # Bengali
-        'বুক', 'বুকিং', 'অ্যাপয়েন্টমেন্ট', 'সময়',
-        # Marathi
-        'बुकिंग', 'भेटीची', 'वेळ',
-        # Gujarati
-        'બુકિંગ', 'મુલાકાત', 'સમય',
-        # Kannada
-        'ಬುಕ್ಕಿಂಗ್', 'ಭೇಟಿ', 'ಸಮಯ',
-        # Malayalam
-        'ബുക്കിംഗ്', 'കൂടിക്കാഴ്ച', 'സമയം',
-        # Punjabi
-        'ਬੁਕਿੰਗ', 'ਮੁਲਾਕਾਤ', 'ਸਮਾਂ',
-        # Urdu (Romanized)
-        'waqt', 'mulaqat',
-    }
-    
-    # Reschedule keywords
-    reschedule_keywords = {
-        'reschedule', 're schedule', 'reshedule', 'reschudule', 'rescedule', 'reschdule', 'reshedul', 'rechedule', 'rescheduel', 'reschedual', 'reschedul', 'rescheduling', 'change', 'modify', 'move', 'shift', 'postpone',
-        'बदलना', 'परिवर्तन', 'மாற்று', 'మార్చు', 'পরিবর্তন', 'बदल', 'બદલો', 'ಬದಲಾಯಿಸಿ', 'മാറ്റുക', 'ਬਦਲੋ'
-    }
-    
-    # Cancel keywords
-    cancel_keywords = {
-        'cancel', 'delete', 'remove', 'drop',
-        'रद्द', 'கைவிடு', 'రద్దు', 'বাতিল', 'रद्द', 'રદ', 'ರದ್ದುಮಾಡಿ', 'റദ്ദാക്കുക', 'ਰੱਦ'
-    }
-    
-    # Status check keywords
-    status_keywords = {
-        'status', 'check', 'view', 'see', 'show', 'my booking', 'my appointment',
-        'स्थिति', 'देखना', 'நிலை', 'స్థితి', 'অবস্থা', 'स्थिती', 'સ્થિતિ', 'ಸ್ಥಿತಿ', 'സ്ഥിതി', 'ਸਥਿਤੀ'
-    }
-    
-    # Check for booking intent
-    has_booking_word = any(kw in msg_lower for kw in booking_keywords)
-    has_reschedule = any(kw in msg_lower for kw in reschedule_keywords)
-    has_cancel = any(kw in msg_lower for kw in cancel_keywords)
-    has_status = any(kw in msg_lower for kw in status_keywords)
-    
-    # Date/Time patterns
-    date_patterns = [
-        r'\d{4}-\d{2}-\d{2}',  # ISO format
-        r'\d{1,2}[/-]\d{1,2}[/-]\d{2,4}',  # Various formats
-        r'\b(today|tomorrow|tomorow|tommorow|tmrw|kal|आज|कल|இன்று|நாளை|ఈరోజు|రేపు|আজ|কাল|आज|उद्या|આજે|કાલે|ಇಂದು|ನಾಳೆ|ഇന്ന്|നാളെ|ਅੱਜ|ਕੱਲ)\b',
-        r'\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b',
-    ]
-    
-    time_patterns = [
-        r'\b\d{1,2}:\d{2}\b',  # 14:30
-        r'\b\d{1,2}\s*(am|pm|AM|PM)\b',  # 2 PM
-        r'\b(morning|afternoon|evening|night|सुबह|दोपहर|शाम|रात)\b',
-    ]
-    
-    has_time = any(re.search(pattern, msg_lower) for pattern in time_patterns)
-    has_appointment_id = bool(re.search(r'\b(appointment|booking|id)?\s*[:#]?\s*\d+\b', msg_lower))
-    
-    # Calculate confidence based on signals
-    confidence = 0.0
-    intent = None
-    is_booking = False
-    
-    if has_cancel:
-        intent = 'cancel'
-        is_booking = True
-        confidence = 0.9 if has_appointment_id else 0.6
-    elif has_reschedule:
-        intent = 'reschedule'
-        is_booking = True
-        confidence = 0.8 if has_appointment_id else 0.5
-    elif has_status:
-        intent = 'check_status'
-        is_booking = True
-        confidence = 0.7
-    elif has_booking_word:
-        intent = 'new_booking'
-        is_booking = True
-        confidence = 0.8 if has_time else 0.6
-    
-    # Boost confidence if context from history suggests booking
-    if history and is_booking:
-        recent_messages = ' '.join([h.get('content', '') for h in history[-3:]])
-        if any(kw in recent_messages.lower() for kw in booking_keywords):
-            confidence = min(confidence + 0.2, 1.0)
-    
-    return {
-        'is_booking': is_booking,
-        'intent': intent,
-        'has_time': has_time,
-        'has_appointment_id': has_appointment_id,
-        'confidence': confidence,
-        'language': detected_lang
-    }
 
 
 def _rate_limit(bot_id: str, org_id: str, limit: int = 30, window_seconds: int = 60):
@@ -729,6 +650,14 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
             # Hybrid intent detection (regex + LLM for ambiguous cases)
             intent_result = _hybrid_intent_detection(msg, history)
             
+            # Debug logging
+            print(f"[INTENT DEBUG] Message: {msg}")
+            print(f"[INTENT DEBUG] is_booking: {intent_result.get('is_booking')}")
+            print(f"[INTENT DEBUG] action: {intent_result.get('action')}")
+            print(f"[INTENT DEBUG] confidence: {intent_result.get('confidence')}")
+            print(f"[INTENT DEBUG] language: {intent_result.get('language')}")
+            print(f"[INTENT DEBUG] detection_method: {intent_result.get('detection_method')}")
+            
             base = getattr(settings, 'PUBLIC_API_BASE_URL', '') or ''
             form_url = f"{base}/api/form/{bot_id}?org_id={body.org_id}" + (f"&bot_key={public_api_key}" if public_api_key else "")
             # res_form_url = f"{base}/api/reschedule/{bot_id}?org_id={body.org_id}" + (f"&bot_key={public_api_key}" if public_api_key else "")
@@ -737,7 +666,7 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
             res_form_url = f"{base}/api/reschedule/{bot_id}?org_id={body.org_id}" + (f"&bot_key={public_api_key}" if public_api_key else "")
             
             # Handle different intents with user-friendly responses
-            if intent_result['is_booking'] and intent_result.get('action') == 'reschedule':
+            if intent_result['is_booking']:
                 intent_type = intent_result.get('action', 'book')
                 # Map action to response key
                 if intent_type == 'book':
@@ -815,11 +744,24 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
                     }
                 }
                 
-                response_text = f"Use the [reschedule form]({res_form_url}) to pick a new time or doctor/service."
+                # Use language-specific response
+                response_text = responses[intent_type].get(lang, responses[intent_type]['en'])
                 
-                _ensure_usage_table(conn)
-                _log_chat_usage(conn, body.org_id, bot_id, intent_result['confidence'], False)
-                return {"answer": response_text, "citations": [], "similarity": intent_result['confidence']}
+                # For status check, only return prompt if no ID is detected
+                # If ID exists, let it fall through to the ID-based status check below
+                if intent_type == 'check_status':
+                    # Check if appointment ID is in the message
+                    has_id = bool(re.search(r"\b(?:appointment|id)\s*[:#]?\s*\d+\b", msg, re.IGNORECASE))
+                    if not has_id:
+                        _ensure_usage_table(conn)
+                        _log_chat_usage(conn, body.org_id, bot_id, intent_result['confidence'], False)
+                        return {"answer": response_text, "citations": [], "similarity": intent_result['confidence']}
+                    # Has ID - continue to ID-based status check below
+                elif intent_type in ['new_booking', 'reschedule', 'cancel']:
+                    # For other intents, return the prompt immediately
+                    _ensure_usage_table(conn)
+                    _log_chat_usage(conn, body.org_id, bot_id, intent_result['confidence'], False)
+                    return {"answer": response_text, "citations": [], "similarity": intent_result['confidence']}
             
             # Continue with existing appointment ID management code
             def _norm_month(s: str) -> int:
@@ -1024,10 +966,25 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
                         _ensure_usage_table(conn)
                         _log_chat_usage(conn, body.org_id, bot_id, 1.0, False)
                         return {"answer": f"Rescheduled ID {ap_id} to {new_si} - {new_ei}", "citations": [], "similarity": 1.0}
-                    # default: show status/details
+                    
+                    # Status check - use multi-language responses
+                    lang = intent_result.get('language', 'en')
+                    status_responses = {
+                        'en': f"Appointment #{ap_id}\nTime: {cur_si} to {cur_ei}\nStatus: {cur_st}",
+                        'hi': f"अपॉइंटमेंट #{ap_id}\nसमय: {cur_si} से {cur_ei}\nस्थिति: {cur_st}",
+                        'ta': f"சந்திப்பு #{ap_id}\nநேரம்: {cur_si} முதல் {cur_ei}\nநிலை: {cur_st}",
+                        'te': f"అపాయింట్మెంట్ #{ap_id}\nసమయం: {cur_si} నుండి {cur_ei}\nస్థితి: {cur_st}",
+                        'kn': f"ಅಪಾಯಿಂಟ್ಮೆಂಟ್ #{ap_id}\nಸಮಯ: {cur_si} ರಿಂದ {cur_ei}\nಸ್ಥಿತಿ: {cur_st}",
+                        'ml': f"അപ്പോയിന്റ്മെന്റ് #{ap_id}\nസമയം: {cur_si} മുതൽ {cur_ei}\nസ്ഥിതി: {cur_st}",
+                        'bn': f"অ্যাপয়েন্টমেন্ট #{ap_id}\nসময়: {cur_si} থেকে {cur_ei}\nঅবস্থা: {cur_st}",
+                        'mr': f"भेट #{ap_id}\nवेळ: {cur_si} ते {cur_ei}\nस्थिती: {cur_st}",
+                        'gu': f"મુલાકાત #{ap_id}\nસમય: {cur_si} થી {cur_ei}\nસ્થિતિ: {cur_st}",
+                        'pa': f"ਮੁਲਾਕਾਤ #{ap_id}\nਸਮਾਂ: {cur_si} ਤੋਂ {cur_ei}\nਸਥਿਤੀ: {cur_st}",
+                    }
+                    status_text = status_responses.get(lang, status_responses['en'])
                     _ensure_usage_table(conn)
-                    _log_chat_usage(conn, body.org_id, bot_id, 0.0, False)
-                    return {"answer": f"Appointment {ap_id}: {cur_si} to {cur_ei}. Status: {cur_st}", "citations": [], "similarity": 0.0}
+                    _log_chat_usage(conn, body.org_id, bot_id, 1.0, False)
+                    return {"answer": status_text, "citations": [], "similarity": 1.0}
                 except Exception:
                     try:
                         _ensure_usage_table(conn)
@@ -1483,7 +1440,10 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
         _rate_limit(bot_id, body.org_id)
         
         # Smart booking intent detection for appointment bots
-        if (behavior or '').strip().lower() == 'appointment':
+        _is_appointment_bot = (behavior or '').strip().lower() == 'appointment'
+        _is_booking_query = False
+        
+        if _is_appointment_bot:
             import re
             msg = body.message.strip()
             
@@ -1493,20 +1453,28 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
             # Hybrid intent detection (regex + LLM for ambiguous cases)
             intent_result = _hybrid_intent_detection(msg, history)
             
-            base = getattr(settings, 'PUBLIC_API_BASE_URL', '') or ''
-            form_url = f"{base}/api/form/{bot_id}?org_id={body.org_id}" + (f"&bot_key={public_api_key}" if public_api_key else "")
-            res_form_url = f"{base}/api/reschedule/{bot_id}?org_id={body.org_id}" + (f"&bot_key={public_api_key}" if public_api_key else "")
+            # Debug logging
+            print(f"[INTENT DEBUG] Message: '{msg}'")
+            print(f"[INTENT DEBUG] Result: is_booking={intent_result.get('is_booking')}, action={intent_result.get('action')}, confidence={intent_result.get('confidence')}, method={intent_result.get('detection_method')}, language={intent_result.get('language')}")
             
-            # Handle different intents with user-friendly responses
-            if intent_result['is_booking'] and intent_result.get('action') == 'reschedule':
+            # Set flag to determine if this is a booking query
+            _is_booking_query = intent_result.get('is_booking', False)
+            
+            # Only handle booking intents with the smart system
+            if _is_booking_query:
+                base = getattr(settings, 'PUBLIC_API_BASE_URL', '') or ''
+                form_url = f"{base}/api/form/{bot_id}?org_id={body.org_id}" + (f"&bot_key={public_api_key}" if public_api_key else "")
+                res_form_url = f"{base}/api/reschedule/{bot_id}?org_id={body.org_id}" + (f"&bot_key={public_api_key}" if public_api_key else "")
+                
+                # Determine intent type and map to response key
                 intent_type = intent_result.get('action', 'book')
-                # Map action to response key
                 if intent_type == 'book':
                     intent_type = 'new_booking'
                 elif intent_type == 'status':
                     intent_type = 'check_status'
                     
                 lang = intent_result.get('language', 'en')
+                print(f"[LANGUAGE DEBUG] Detected language: {lang}")
                 
                 # Multi-language responses with booking form links (same as non-streaming)
                 responses = {
@@ -1533,6 +1501,30 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
                         'mr': f"तुमची भेट रीशेड्यूल करण्यासाठी [रीशेड्यूल फॉर्म]({res_form_url}) वापरून नवीन वेळ निवडा.",
                         'gu': f"તમારી મુલાકાતને રીશેડ્યૂલ કરવા [રીશેડ્યૂલ ફોર્મ]({res_form_url}) નો ઉપયોગ કરીને નવો સમય પસંદ કરો.",
                         'pa': f"ਆਪਣੀ ਮੁਲਾਕਾਤ ਨੂੰ ਰੀਸ਼ਡਿਊਲ ਕਰਨ ਲਈ [ਰੀਸ਼ਡਿਊਲ ਫਾਰਮ]({res_form_url}) ਵਰਤੋਂ ਅਤੇ ਨਵਾਂ ਸਮਾਂ ਚੁਣੋ.",
+                    },
+                    'cancel': {
+                        'en': "I can help you cancel your appointment. Please provide your appointment ID (e.g., 'appointment 123' or 'ID: 123').",
+                        'hi': "मैं आपकी अपॉइंटमेंट रद्द करने में मदद कर सकता हूं। कृपया अपनी अपॉइंटमेंट ID बताएं (जैसे, 'अपॉइंटमेंट 123' या 'ID: 123')।",
+                        'ta': "உங்கள் சந்திப்பை ரத்து செய்ய நான் உதவ முடியும். உங்கள் அப்பாயின்ட்மென்ட் ID வழங்கவும் (எ.கா., 'அப்பாயின்ட்மென்ட் 123' அல்லது 'ID: 123').",
+                        'te': "మీ అపాయింట్మెంట్ను రద్దు చేయడానికి నేను సహాయం చేయగలను. దయచేసి మీ అపాయింట్మెంట్ ID అందించండి (ఉదా., 'అపాయింట్మెంట్ 123' లేదా 'ID: 123').",
+                        'kn': "ನಿಮ್ಮ ಅಪಾಯಿಂಟ್ಮೆಂಟ್ ರದ್ದುಗೊಳಿಸಲು ನಾನು ಸಹಾಯ ಮಾಡಬಲ್ಲೆ. ದಯವಿಟ್ಟು ನಿಮ್ಮ ಅಪಾಯಿಂಟ್ಮೆಂಟ್ ID ನೀಡಿ (ಉದಾ., 'ಅಪಾಯಿಂಟ್ಮೆಂಟ್ 123' ಅಥವಾ 'ID: 123').",
+                        'ml': "നിങ്ങളുടെ അപ്പോയിന്റ്മെന്റ് റദ്ദാക്കാൻ എനിക്ക് സഹായിക്കാം. ദയവായി നിങ്ങളുടെ അപ്പോയിന്റ്മെന്റ് ID നൽകുക (ഉദാ., 'അപ്പോയിന്റ്മെന്റ് 123' അല്ലെങ്കിൽ 'ID: 123').",
+                        'bn': "আপনার অ্যাপয়েন্টমেন্ট বাতিল করতে আমি সাহায্য করতে পারি। অনুগ্রহ করে আপনার অ্যাপয়েন্টমেন্ট ID প্রদান করুন (যেমন, 'অ্যাপয়েন্টমেন্ট 123' বা 'ID: 123')।",
+                        'mr': "तुमची भेट रद्द करण्यात मी मदत करू शकतो. कृपया तुमचा अपॉइंटमेंट ID द्या (उदा., 'अपॉइंटमेंट 123' किंवा 'ID: 123').",
+                        'gu': "હું તમારી મુલાકાત રદ કરવામાં મદદ કરી શકું છું. કૃપા કરીને તમારી એપોઇન્ટમેન્ટ ID આપો (દા.ત., 'એપોઇન્ટમેન્ટ 123' અથવા 'ID: 123').",
+                        'pa': "ਮੈਂ ਤੁਹਾਡੀ ਮੁਲਾਕਾਤ ਰੱਦ ਕਰਨ ਵਿੱਚ ਮਦਦ ਕਰ ਸਕਦਾ ਹਾਂ। ਕਿਰਪਾ ਕਰਕੇ ਆਪਣੀ ਮੁਲਾਕਾਤ ID ਦਿਓ (ਜਿਵੇਂ, 'ਮੁਲਾਕਾਤ 123' ਜਾਂ 'ID: 123').",
+                    },
+                    'check_status': {
+                        'en': "I can check your appointment status. Please provide your appointment ID or email address.",
+                        'hi': "मैं आपकी अपॉइंटमेंट की स्थिति जांच सकता हूं। कृपया अपनी अपॉइंटमेंट ID या ईमेल पता बताएं।",
+                        'ta': "உங்கள் சந்திப்பு நிலையை நான் சரிபார்க்க முடியும். உங்கள் அப்பாயின்ட்மென்ட் ID அல்லது மின்னஞ்சல் முகவரியை வழங்கவும்.",
+                        'te': "మీ అపాయింట్మెంట్ స్థితిని నేను తనిఖీ చేయగలను. దయచేసి మీ అపాయింట్మెంట్ ID లేదా ఇమెయిల్ చిరునామా అందించండి.",
+                        'kn': "ನಿಮ್ಮ ಅಪಾಯಿಂಟ್ಮೆಂಟ್ ಸ್ಥಿತಿಯನ್ನು ನಾನು ಪರಿಶೀಲಿಸಬಹುದು. ದಯವಿಟ್ಟು ನಿಮ್ಮ ಅಪಾಯಿಂಟ್ಮೆಂಟ್ ID ಅಥವಾ ಇಮೇಲ್ ವಿಳಾಸವನ್ನು ನೀಡಿ.",
+                        'ml': "നിങ്ങളുടെ അപ്പോയിന്റ്മെന്റ് സ്ഥിതി എനിക്ക് പരിശോധിക്കാം. ദയവായി നിങ്ങളുടെ അപ്പോയിന്റ്മെന്റ് ID അല്ലെങ്കിൽ ഇമെയിൽ വിലാസം നൽകുക.",
+                        'bn': "আমি আপনার অ্যাপয়েন্টমেন্ট স্ট্যাটাস চেক করতে পারি। অনুগ্রহ করে আপনার অ্যাপয়েন্টমেন্ট ID বা ইমেইল ঠিকানা প্রদান করুন।",
+                        'mr': "मी तुमच्या भेटीची स्थिती तपासू शकतो. कृपया तुमचा अपॉइंटमेंट ID किंवा ईमेल पत्ता द्या.",
+                        'gu': "હું તમારી મુલાકાતની સ્થિતિ તપાસી શકું છું. કૃપા કરીને તમારી એપોઇન્ટમેન્ટ ID અથવા ઇમેઇલ સરનામું આપો.",
+                        'pa': "ਮੈਂ ਤੁਹਾਡੀ ਮੁਲਾਕਾਤ ਦੀ ਸਥਿਤੀ ਜਾਂਚ ਸਕਦਾ ਹਾਂ। ਕਿਰਪਾ ਕਰਕੇ ਆਪਣੀ ਮੁਲਾਕਾਤ ID ਜਾਂ ਈਮੇਲ ਪਤਾ ਦਿਓ।",
                     }
                 }
                 
@@ -1543,9 +1535,10 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
                     yield "event: end\n\n"
                 
                 _ensure_usage_table(conn)
-                _log_chat_usage(conn, body.org_id, bot_id, intent_result['confidence'], False)
+                _log_chat_usage(conn, body.org_id, bot_id, intent_result.get('confidence', 0.0), False)
                 return StreamingResponse(gen_response(), media_type="text/event-stream")
-            
+        
+        # Old booking logic - only run if appointment bot AND booking intent detected
         import re
         msg_raw = (body.message or '').strip()
         low = msg_raw.lower()
@@ -1557,7 +1550,9 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
         )
         has_action = bool(re.search(r"\b(book|schedule|reschedule|cancel|change)\b", low))
         has_id = bool(re.search(r"\b(?:appointment|id)\s*[:#]?\s*\d+\b", low))
-        if (behavior or '').strip().lower() == 'appointment' and (has_time or has_action or has_id):
+        
+        # Only run old booking system if: 1) it's an appointment bot, 2) booking intent detected, 3) has time/action/id
+        if _is_appointment_bot and _is_booking_query and (has_time or has_action or has_id):
             import re
             msg = body.message.strip()
             base = getattr(settings, 'PUBLIC_API_BASE_URL', '') or ''
