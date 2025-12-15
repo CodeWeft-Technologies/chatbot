@@ -1454,8 +1454,8 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
             intent_result = _hybrid_intent_detection(msg, history)
             
             # Debug logging
-            print(f"[INTENT DEBUG] Message: '{msg}'")
-            print(f"[INTENT DEBUG] Result: is_booking={intent_result.get('is_booking')}, action={intent_result.get('action')}, confidence={intent_result.get('confidence')}, method={intent_result.get('detection_method')}, language={intent_result.get('language')}")
+            # print(f"[INTENT DEBUG] Message: '{msg}'")
+            # print(f"[INTENT DEBUG] Result: is_booking={intent_result.get('is_booking')}, action={intent_result.get('action')}, confidence={intent_result.get('confidence')}, method={intent_result.get('detection_method')}, language={intent_result.get('language')}")
             
             # Set flag to determine if this is a booking query
             _is_booking_query = intent_result.get('is_booking', False)
@@ -1474,7 +1474,7 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
                     intent_type = 'check_status'
                     
                 lang = intent_result.get('language', 'en')
-                print(f"[LANGUAGE DEBUG] Detected language: {lang}")
+                # print(f"[LANGUAGE DEBUG] Detected language: {lang}")
                 
                 # Multi-language responses with booking form links (same as non-streaming)
                 responses = {
