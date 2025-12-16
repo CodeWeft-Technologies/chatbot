@@ -26,6 +26,7 @@ class FormFieldCreate(BaseModel):
     validation_rules: Optional[Dict[str, Any]] = None
     options: Optional[List[FormFieldOption]] = None
     default_value: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
 
 class FormFieldUpdate(BaseModel):
     field_label: Optional[str] = None
@@ -38,6 +39,7 @@ class FormFieldUpdate(BaseModel):
     options: Optional[List[FormFieldOption]] = None
     default_value: Optional[str] = None
     is_active: Optional[bool] = None
+    metadata: Optional[Dict[str, Any]] = None
 
 class FormConfigurationCreate(BaseModel):
     org_id: str
@@ -196,16 +198,17 @@ def create_form_field(config_id: str, field: FormFieldCreate):
             field_dict = field.model_dump()
             options_json = json.dumps(field_dict['options']) if field_dict.get('options') else None
             validation_json = json.dumps(field_dict['validation_rules']) if field_dict.get('validation_rules') else None
+            metadata_json = json.dumps(field_dict['metadata']) if field_dict.get('metadata') else None
             
             cur.execute("""
                 insert into form_fields 
                 (form_config_id, field_name, field_label, field_type, field_order, is_required,
-                 placeholder, help_text, validation_rules, options, default_value)
-                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 placeholder, help_text, validation_rules, options, default_value, metadata)
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 returning id, created_at
             """, (config_id, field.field_name, field.field_label, field.field_type, field.field_order,
                   field.is_required, field.placeholder, field.help_text, validation_json, options_json,
-                  field.default_value))
+                  field.default_value, metadata_json))
             result = cur.fetchone()
             conn.commit()
             return {
@@ -231,7 +234,7 @@ def get_form_fields(config_id: str, include_inactive: bool = False):
             
             cur.execute(f"""
                 select id, field_name, field_label, field_type, field_order, is_required,
-                       placeholder, help_text, validation_rules, options, default_value, is_active
+                       placeholder, help_text, validation_rules, options, default_value, is_active, metadata
                 from form_fields
                 {where_clause}
                 order by field_order
@@ -251,7 +254,8 @@ def get_form_fields(config_id: str, include_inactive: bool = False):
                     "validation_rules": row[8],
                     "options": row[9],
                     "default_value": row[10],
-                    "is_active": row[11]
+                    "is_active": row[11],
+                    "metadata": row[12]
                 })
             return {"fields": fields}
     finally:
@@ -271,6 +275,9 @@ def update_form_field(field_id: str, update: FormFieldUpdate):
                 # value is already a list of dicts after model_dump()
                 values.append(json.dumps(value))
             elif key == 'validation_rules' and value is not None:
+                fields.append(f"{key} = %s")
+                values.append(json.dumps(value))
+            elif key == 'metadata' and value is not None:
                 fields.append(f"{key} = %s")
                 values.append(json.dumps(value))
             else:
@@ -698,7 +705,7 @@ def get_bot_available_slots(bot_id: str, booking_date: date):
                       and booking_date = %s
                       and start_time = %s
                       and status not in ('cancelled', 'rejected')
-                """, (bot_id, booking_date, slot["start_time"]))
+                """, (bot_id, booking_date, slot["start_time"]), prepare=False)
                 
                 booked_count = cur.fetchone()[0]
                 available_capacity = capacity - booked_count
@@ -1102,6 +1109,21 @@ def get_booking_by_id(booking_id: int):
             except Exception:
                 pass
             
+            # Extract resource_name, with fallback to form_data
+            resource_name = row[10]
+            if not resource_name and row[11]:  # If resource_name is empty, check form_data
+                try:
+                    form_data = row[11] if isinstance(row[11], dict) else {}
+                    # Try common field names for service/doctor
+                    for field_name in ['service', 'doctor', 'service_name', 'doctor_name', 
+                                       'service_type', 'appointment_type', 'resource', 
+                                       'provider', 'staff', 'specialist']:
+                        if field_name in form_data and form_data[field_name]:
+                            resource_name = str(form_data[field_name])
+                            break
+                except Exception:
+                    pass
+            
             return {
                 "id": row[0],
                 "org_id": row[1],
@@ -1113,7 +1135,7 @@ def get_booking_by_id(booking_id: int):
                 "start_time": str(row[7]),
                 "end_time": str(row[8]),
                 "resource_id": str(row[9]) if row[9] else None,
-                "resource_name": row[10],
+                "resource_name": resource_name,
                 "form_data": row[11],
                 "status": row[12],
                 "notes": row[13],
@@ -1130,6 +1152,7 @@ class BookingRescheduleBody(BaseModel):
     start_time: time
     end_time: time
     resource_id: Optional[str] = None
+    form_data: Optional[Dict[str, Any]] = None
 
 @router.post("/bookings/{booking_id}/reschedule")
 def reschedule_booking(booking_id: int, body: BookingRescheduleBody):
@@ -1227,12 +1250,22 @@ def reschedule_booking(booking_id: int, body: BookingRescheduleBody):
                     ok = update_event_oauth(svc, (cal[0] or "primary"), ext_event_id, patch)
                     calendar_synced = bool(ok)
             
-            cur.execute("""
-                update bookings 
-                set booking_date=%s, start_time=%s, end_time=%s, resource_id=%s, resource_name=%s, status='confirmed'
-                where id=%s
-                returning id, customer_name, customer_email, booking_date, start_time, end_time, resource_id, resource_name
-            """, (body.booking_date, body.start_time, body.end_time, new_res_id, new_res_name, booking_id))
+            # Update booking with new details including form_data if provided
+            if body.form_data is not None:
+                form_data_json = json.dumps(body.form_data)
+                cur.execute("""
+                    update bookings 
+                    set booking_date=%s, start_time=%s, end_time=%s, resource_id=%s, resource_name=%s, form_data=%s, status='confirmed', updated_at=now()
+                    where id=%s
+                    returning id, customer_name, customer_email, booking_date, start_time, end_time, resource_id, resource_name, form_data
+                """, (body.booking_date, body.start_time, body.end_time, new_res_id, new_res_name, form_data_json, booking_id))
+            else:
+                cur.execute("""
+                    update bookings 
+                    set booking_date=%s, start_time=%s, end_time=%s, resource_id=%s, resource_name=%s, status='confirmed', updated_at=now()
+                    where id=%s
+                    returning id, customer_name, customer_email, booking_date, start_time, end_time, resource_id, resource_name, form_data
+                """, (body.booking_date, body.start_time, body.end_time, new_res_id, new_res_name, booking_id))
             upd = cur.fetchone()
             conn.commit()
             return {
@@ -1244,6 +1277,7 @@ def reschedule_booking(booking_id: int, body: BookingRescheduleBody):
                 "end_time": str(upd[5]),
                 "resource_id": str(upd[6]) if upd[6] else None,
                 "resource_name": upd[7],
+                "form_data": upd[8],
                 "calendar_event_id": ext_event_id,
                 "calendar_synced": calendar_synced
             }
