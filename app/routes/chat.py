@@ -1,12 +1,42 @@
-from fastapi import APIRouter, HTTPException, Header
+from fastapi import APIRouter, HTTPException, Header, Request
 from pydantic import BaseModel
 from typing import List, Union
 from groq import Groq
 from typing import Optional
 from starlette.responses import StreamingResponse
 from starlette.responses import PlainTextResponse
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
+import httpx
 
+
+# Import settings before use
+from app.config import settings
+
+router = APIRouter()
+client = Groq(api_key=settings.GROQ_API_KEY)
+
+# Proxy image endpoint (must be after router is defined)
+@router.get("/proxy-image")
+async def proxy_image(url: str, request: Request):
+    """
+    Proxy an image from any URL to bypass CORS/hotlinking issues for widget icons.
+    Usage: /api/proxy-image?url=https://example.com/image.png
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.get(url)
+            if r.status_code != 200 or not r.headers.get("content-type", "").startswith("image/"):
+                return Response(status_code=404, content="Not an image.")
+            # Pass through content type and cache headers
+            headers = {"content-type": r.headers["content-type"]}
+            if "cache-control" in r.headers:
+                headers["cache-control"] = r.headers["cache-control"]
+            return Response(content=r.content, headers=headers)
+    except Exception as e:
+        return Response(status_code=502, content=f"Proxy error: {e}")
+
+
+# Move settings import to the top so it's available for client = Groq(api_key=settings.GROQ_API_KEY)
 from app.config import settings
 from app.rag import search_top_chunks
 from app.db import get_conn, normalize_org_id
@@ -3046,6 +3076,8 @@ def booking_form(bot_id: str, org_id: str, bot_key: Optional[str] = None):
         ".time-slot{padding:10px;border:2px solid #e0e0e0;border-radius:8px;background:#f9f9f9;cursor:pointer;text-align:center;font-size:13px;font-weight:600;color:#333;transition:all 0.2s ease}"
         ".time-slot:hover{border-color:#667eea;background:#f0f4ff}"
         ".time-slot.selected{background:#667eea;color:#fff;border-color:#667eea}"
+        ".time-slot .cap{display:block;font-size:11px;color:#666;margin-top:4px;font-weight:500}"
+        ".time-slot.selected .cap{color:#fff}"
         ".slot-status{font-size:13px;color:#666;padding:12px;text-align:center;background:#f5f5f5;border-radius:8px;margin-top:12px}"
         ".loading-spinner{display:inline-block;width:14px;height:14px;border:2px solid #e0e0e0;border-top:2px solid #667eea;border-radius:50%;animation:spin 0.8s linear infinite;margin-right:6px}"
         "@keyframes spin{0%{transform:rotate(0deg)}100%{transform:rotate(360deg)}}"
@@ -3070,7 +3102,7 @@ def booking_form(bot_id: str, org_id: str, bot_key: Optional[str] = None):
         "</div>"
         "<script>"
         "const ORG='" + org_id + "',BOT='" + bot_id + "',BOT_KEY='" + (bot_key or '') + "',API='" + api_url + "';"
-        "let chosen=null,loading=false,formFields=[],resources={},formConfig=null;"
+        "let chosen=null,loading=false,formFields=[],resources={},formConfig=null,allResources=[];"
         "function showMsg(t,ty){const o=document.getElementById('out');o.textContent=t;o.className=ty;o.style.display='block';}"
         
         # Load form configuration and fields
@@ -3088,8 +3120,9 @@ def booking_form(bot_id: str, org_id: str, bot_key: Optional[str] = None):
         "      const r3=await fetch(API+'/api/resources/'+BOT,{headers:h});"
         "      if(r3.ok){"
         "        const data=await r3.json();"
-        "        resources=(data.resources||[]).reduce((acc,r)=>{acc[r.resource_type]=acc[r.resource_type]||[];acc[r.resource_type].push(r);return acc;},{});"
-        "        window._resourceIndex=(data.resources||[]).reduce((m,r)=>{"
+        "        allResources=data.resources||[];"
+        "        resources=allResources.reduce((acc,r)=>{acc[r.resource_type]=acc[r.resource_type]||[];acc[r.resource_type].push(r);return acc;},{});"
+        "        window._resourceIndex=allResources.reduce((m,r)=>{"
         "          m.ids[r.id]=r;"
         "          if(r.resource_code)m.codes[r.resource_code]=r;"
         "          if(r.resource_name)m.names[(r.resource_name||'').toLowerCase()]=r;"
@@ -3190,6 +3223,7 @@ def booking_form(bot_id: str, org_id: str, bot_key: Optional[str] = None):
         "  const el=document.getElementById('slots'),st=document.getElementById('slot-status');"
         "  el.innerHTML='';st.innerHTML='<span class=\"loading-spinner\"></span> Loading...';st.style.display='block';"
         "  let resourceId=null;"
+        "  const hasResources=allResources&&allResources.length>0;"
         "  try{"
         "    const formData={};"
         "    formFields.forEach(f=>{"
@@ -3211,6 +3245,7 @@ def booking_form(bot_id: str, org_id: str, bot_key: Optional[str] = None):
         "      });"
         "    }"
         "  }catch(e){}"
+        "  if(hasResources&&!resourceId){st.textContent='Please select a service or doctor first';st.style.display='block';return;}"
         "  const url=resourceId?(API+'/api/resources/'+resourceId+'/available-slots?booking_date='+dt):(API+'/api/bots/'+BOT+'/available-slots?booking_date='+dt);"
         "  try{"
         "    const r=await fetch(url,{headers:h});"
@@ -3229,8 +3264,8 @@ def booking_form(bot_id: str, org_id: str, bot_key: Optional[str] = None):
         "      const b=document.createElement('button');b.type='button';b.className='time-slot';"
         "      const [h,m]=s.start_time.split(':');"
         "      const hNum=parseInt(h,10);const ampm=hNum>=12?'PM':'AM';const h12=hNum%12||12;"
-        "      b.textContent=h12+':'+(m||'00')+' '+ampm;"
-        "      if(s.available_capacity){b.setAttribute('data-capacity',s.available_capacity);}"
+        "      const cap=s.available_capacity;"
+        "      b.innerHTML=h12+':'+(m||'00')+' '+ampm+(cap?('<span class=\"cap\">'+cap+' available</span>'):'');"
         "      b.onclick=()=>{"
         "        chosen={start:dt+'T'+s.start_time,end:dt+'T'+s.end_time};"
         "        document.querySelectorAll('.time-slot').forEach(x=>x.classList.remove('selected'));"
@@ -3305,8 +3340,15 @@ def reschedule_form(bot_id: str, org_id: str, bot_key: Optional[str] = None):
         ".step.active{background:#111;color:#fff}"
         ".form-group{margin-bottom:20px}"
         ".form-group label{display:block;font-size:13px;font-weight:600;color:#333;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.5px}"
-        ".form-group input,.form-group select{width:100%;padding:12px 14px;border:2px solid #e5e7eb;border-radius:10px;font-size:14px;transition:all 0.3s ease;font-family:inherit;background:#fafafa}"
-        ".form-group input:focus,.form-group select:focus{outline:none;border-color:#22c1c3;box-shadow:0 0 0 3px rgba(34,193,195,0.15)}"
+        ".form-group input,.form-group select,.form-group textarea{width:100%;padding:12px 14px;border:2px solid #e5e7eb;border-radius:10px;font-size:14px;transition:all 0.3s ease;font-family:inherit;background:#fafafa}"
+        ".form-group input:focus,.form-group select:focus,.form-group textarea:focus{outline:none;border-color:#22c1c3;box-shadow:0 0 0 3px rgba(34,193,195,0.15)}"
+        ".form-group textarea{min-height:80px;resize:vertical}"
+        ".form-group.required label:after{content:' *';color:#dc2626}"
+        ".help-text{font-size:11px;color:#6b7280;margin-top:4px}"
+        ".radio-group,.checkbox-group{display:flex;flex-direction:column;gap:8px}"
+        ".radio-option{display:flex;align-items:center;gap:8px;padding:8px;border:2px solid #e5e7eb;border-radius:8px;cursor:pointer;transition:all 0.2s}"
+        ".radio-option:hover{border-color:#22c1c3;background:#f0fdfa}"
+        ".radio-option input{margin:0}"
         ".section{margin-bottom:16px;padding:16px;border:1px solid #eee;border-radius:12px;background:#fff}"
         ".section:last-of-type{border-bottom:none}"
         ".section-title{font-size:16px;font-weight:700;color:#333;margin-bottom:16px}"
@@ -3358,7 +3400,6 @@ def reschedule_form(bot_id: str, org_id: str, bot_key: Optional[str] = None):
         "<div class=\"section\" id=\"rescheduler\" style=\"display:none\">"
         "<div class=\"section-title\">Select Date, Time & Doctor/Service</div>"
         "<div class=\"form-group\"><label>Date</label><input id=\"booking_date\" type=\"date\"></div>"
-        "<div class=\"form-group\"><label>Search</label><input id=\"resource_search\" type=\"text\" placeholder=\"Search doctor/service\"></div>"
         "<div class=\"form-group\"><label>Doctor/Service</label><select id=\"resource_select\"><option value=\"\">Current</option></select></div>"
         "<div class=\"time-slots\" id=\"slots\"></div>"
         "<div class=\"slot-status\" id=\"slot-status\" style=\"display:none\"></div>"
@@ -3384,14 +3425,6 @@ def reschedule_form(bot_id: str, org_id: str, bot_key: Optional[str] = None):
         "    const sel=document.getElementById('resource_select');"
         "    sel.innerHTML='<option value=\"\">Current</option>';"
         "    allResources.forEach(r=>{const opt=document.createElement('option');opt.value=r.id;opt.textContent=r.resource_name;sel.appendChild(opt);});"
-        "    const rs=document.getElementById('resource_search');"
-        "    if(rs){"
-        "      rs.oninput=()=>{"
-        "        const q=(rs.value||'').toLowerCase();"
-        "        sel.innerHTML='<option value=\"\">Current</option>';"
-        "        allResources.filter(r=>((r.resource_name||'').toLowerCase().includes(q)||((r.resource_code||'').toLowerCase().includes(q)))).forEach(r=>{const opt=document.createElement('option');opt.value=r.id;opt.textContent=r.resource_name;sel.appendChild(opt);});"
-        "      };"
-        "    }"
         "  }catch(e){}"
         "}"
         "async function loadBooking(){"
@@ -3474,10 +3507,13 @@ def reschedule_form(bot_id: str, org_id: str, bot_key: Optional[str] = None):
         "async function loadSlots(){"
         "  const dt=document.getElementById('booking_date').value;"
         "  if(!dt||!current)return;"
+        "  chosen=null;document.getElementById('submit').disabled=true;"
         "  const h={};if(BOT_KEY)h['X-Bot-Key']=BOT_KEY;"
         "  const el=document.getElementById('slots'),st=document.getElementById('slot-status');"
         "  el.innerHTML='';st.innerHTML='<span class=\"loading-spinner\"></span> Loading...';st.style.display='block';"
+        "  const hasResources=allResources&&allResources.length>0;"
         "  let resourceId=document.getElementById('resource_select').value||current.resource_id||null;"
+        "  if(hasResources&&!resourceId){st.textContent='Please select a service or doctor first';st.style.display='block';return;}"
         "  const url=resourceId?(API+'/api/resources/'+resourceId+'/available-slots?booking_date='+dt):(API+'/api/bots/'+BOT+'/available-slots?booking_date='+dt);"
         "  try{"
         "    const r=await fetch(url,{headers:h});"
@@ -3496,7 +3532,7 @@ def reschedule_form(bot_id: str, org_id: str, bot_key: Optional[str] = None):
         "      const [h0,m0]=s.start_time.split(':');"
         "      const hNum=parseInt(h0,10);const ampm=hNum>=12?'PM':'AM';const h12=hNum%12||12;"
         "      const cap=s.available_capacity;"
-        "      b.innerHTML=h12+':'+(m0||'00')+' '+ampm+(cap?('<span class=\"cap\">'+cap+' left</span>'):'');"
+        "      b.innerHTML=h12+':'+(m0||'00')+' '+ampm+(cap?('<span class=\"cap\">'+cap+' available</span>'):'');"
         "      b.onclick=()=>{"
         "        chosen={start:dt+'T'+s.start_time,end:dt+'T'+s.end_time};"
         "        document.querySelectorAll('.time-slot').forEach(x=>x.classList.remove('selected'));"
@@ -4093,6 +4129,9 @@ def widget_js():
         "  try{ if(T==='dark' && BOT===BG){ BOT='rgba(255,255,255,0.06)'; } }catch(__){}\n"
         "  var SHADOW=C.shadow||((T==='dark')?'0 24px 72px rgba(0,0,0,0.65),0 8px 24px rgba(0,0,0,0.45)':'0 10px 30px rgba(0,0,0,0.15)');"
         "  var RADIUS=(C.radius!==undefined?C.radius+'px':'12px');"
+        "  var LSIZE=(C.launcherSize||56);"
+        "  var ISCALE=(C.iconScale||60);"
+        "  var TRANSPARENT=C.transparentBubble||false;"
         "  var BN='CodeWeft';"
         "  var BL='https://github.com/CodeWeft-Technologies';\n"
         "  if(!O){console.warn('Chatbot: OrgId missing');return;}\n"
@@ -4113,7 +4152,8 @@ def widget_js():
         "    try{localStorage.setItem(SESSION_KEY,JSON.stringify({id:newId,created:Date.now()}));}catch(__){}\n"
         "    return newId;\n"
         "  })();\n"
-
+        "  var BTN_BG=TRANSPARENT?'transparent':'linear-gradient(135deg, '+ACC+', color-mix(in srgb, '+ACC+' 80%, black))';"
+        "  var BTN_SHADOW=TRANSPARENT?'none':'0 8px 32px rgba(0,0,0,0.12), 0 2px 8px rgba(0,0,0,0.08)';"
         "  // --- CSS Injection ---\n"
         "  var __cw_css = `\n"
         "    :root {\n"
@@ -4127,40 +4167,51 @@ def widget_js():
         "      --cb-bubble-bot: ${BOT};\n"
         "      --cb-shadow: ${SHADOW};\n"
         "      --cb-radius: ${RADIUS};\n"
+        "      --cb-lsize: ${LSIZE}px;\n"
+        "      --cb-icon-scale: ${ISCALE}%;\n"
+        "      --cb-icon-fs: ${ISCALE*0.4}px;\n"
+        "      --cb-btn-bg: ${BTN_BG};\n"
+        "      --cb-btn-shadow: ${BTN_SHADOW};\n"
         "      --cb-mode: ${T};\n"
         "    }\n"
         "    :root[data-cb-theme='dark'] { color-scheme:dark; }\n"
-        "    .cb-btn { position:fixed; bottom:24px; width:60px; height:60px; border-radius:var(--cb-radius); border:none; background:linear-gradient(135deg, var(--cb-accent), color-mix(in srgb, var(--cb-accent) 80%, black)); display:flex; align-items:center; justify-content:center; cursor:pointer; z-index:99999; box-shadow:0 8px 32px rgba(0,0,0,0.12), 0 2px 8px rgba(0,0,0,0.08); transition:all .3s cubic-bezier(0.4, 0, 0.2, 1); backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); }\n"
-        "    .cb-btn:hover { transform:translateY(-4px) scale(1.02); box-shadow:0 16px 48px rgba(0,0,0,0.16), 0 4px 12px rgba(0,0,0,0.12); }\n"
-        "    .cb-btn:active { transform:translateY(-2px) scale(0.98); }\n"
-        "    .cb-btn svg { width:32px; height:32px; display:block; fill:#fff; filter:drop-shadow(0 2px 4px rgba(0,0,0,0.1)); }\n"
-        "    .cb-emoji { font-size:32px; line-height:1; filter:drop-shadow(0 2px 4px rgba(0,0,0,0.1)); }\n"
-        "    .cb-badge { position:absolute; top:-4px; right:-4px; min-width:28px; height:20px; padding:0 8px; border-radius:999px; display:none; align-items:center; justify-content:center; background:linear-gradient(135deg, #ef4444, #dc2626); color:#fff; box-shadow:0 4px 12px rgba(239,68,68,0.4); z-index:999999; font-size:11px; font-weight:700; }\n"
-        "    .cb-badge .dot { width:5px; height:5px; border-radius:50%; background:#fff; display:inline-block; margin:0 2px; opacity:.6; animation:badge-dot 1.2s ease-in-out infinite; }\n"
+        "    .cb-btn { position:fixed; bottom:20px; width:var(--cb-lsize); height:var(--cb-lsize); border-radius:var(--cb-radius); border:none; background:var(--cb-btn-bg); display:flex; align-items:center; justify-content:center; cursor:pointer; z-index:99999; box-shadow:var(--cb-btn-shadow); transition:all .3s cubic-bezier(0.4, 0, 0.2, 1); backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); }\n"
+        "    .cb-btn:hover { transform:translateY(-2px) scale(1.05); box-shadow:0 12px 36px rgba(0,0,0,0.16), 0 4px 12px rgba(0,0,0,0.12); }\n"
+        "    .cb-btn:active { transform:translateY(0) scale(0.98); }\n"
+        "    .cb-btn svg { width:var(--cb-icon-scale); height:var(--cb-icon-scale); display:block; fill:#fff; filter:drop-shadow(0 2px 4px rgba(0,0,0,0.1)); }\n"
+        "    .cb-emoji { font-size:var(--cb-icon-fs); line-height:1; filter:drop-shadow(0 2px 4px rgba(0,0,0,0.1)); }\n"
+        "    .cb-badge { position:absolute; top:-4px; right:-4px; min-width:24px; height:18px; padding:0 6px; border-radius:999px; display:none; align-items:center; justify-content:center; background:linear-gradient(135deg, #ef4444, #dc2626); color:#fff; box-shadow:0 4px 12px rgba(239,68,68,0.4); z-index:999999; font-size:10px; font-weight:700; }\n"
+        "    .cb-badge .dot { width:4px; height:4px; border-radius:50%; background:#fff; display:inline-block; margin:0 1px; opacity:.6; animation:badge-dot 1.2s ease-in-out infinite; }\n"
         "    .cb-badge .dot:nth-child(2) { animation-delay:.15s; } .cb-badge .dot:nth-child(3) { animation-delay:.3s; }\n"
-        "    @keyframes badge-dot { 0%,100%{transform:translateY(0) scale(1);opacity:.6} 50%{transform:translateY(-5px) scale(1.1);opacity:1} }\n"
-        "    .cb-panel { position:fixed; bottom:100px; width:400px; max-width:calc(100vw - 32px); border-radius:var(--cb-radius); overflow:hidden; display:none; flex-direction:column; z-index:99998; box-shadow:0 20px 60px rgba(0,0,0,0.2), 0 8px 24px rgba(0,0,0,0.12); background:var(--cb-bg); border:1px solid var(--cb-border); transform-origin:right bottom; opacity:0; transform:translateY(16px) scale(0.95); transition:all .3s cubic-bezier(0.4, 0, 0.2, 1); }\n"
-        "    .cb-head { display:flex; align-items:center; justify-content:space-between; padding:16px 20px; border-bottom:1px solid var(--cb-border); background:linear-gradient(135deg, var(--cb-card), color-mix(in srgb, var(--cb-card) 97%, black)); backdrop-filter:blur(10px); }\n"
-        "    .cb-title { font-weight:700; font-size:16px; color:var(--cb-text); display:flex; align-items:center; gap:10px; letter-spacing:-0.01em; }\n"
-        "    .cb-body { height:420px; overflow-y:auto; padding:20px; display:flex; flex-direction:column; gap:14px; background:var(--cb-bg); scroll-behavior:smooth; }\n"
+        "    @keyframes badge-dot { 0%,100%{transform:translateY(0) scale(1);opacity:.6} 50%{transform:translateY(-4px) scale(1.1);opacity:1} }\n"
+        "    .cb-panel { position:fixed; bottom:85px; width:380px; max-width:calc(100vw - 24px); max-height:min(550px, calc(100vh - 120px)); border-radius:var(--cb-radius); overflow:hidden; display:none; flex-direction:column; z-index:99998; box-shadow:0 20px 60px rgba(0,0,0,0.2), 0 8px 24px rgba(0,0,0,0.12); background:var(--cb-bg); border:1px solid var(--cb-border); transform-origin:right bottom; opacity:0; transform:translateY(16px) scale(0.95); transition:all .3s cubic-bezier(0.4, 0, 0.2, 1); }\n"
+        "    @media (max-width: 480px) { .cb-panel { width:calc(100vw - 16px); max-height:calc(100vh - 100px); bottom:75px; } .cb-btn { width:52px; height:52px; bottom:16px; } }\n"
+        "    .cb-head { display:flex; align-items:center; justify-content:space-between; padding:14px 18px; border-bottom:1px solid var(--cb-border); background:linear-gradient(135deg, var(--cb-card), color-mix(in srgb, var(--cb-card) 97%, black)); backdrop-filter:blur(10px); }\n"
+        "    .cb-title { font-weight:700; font-size:15px; color:var(--cb-text); display:flex; align-items:center; gap:8px; letter-spacing:-0.01em; }\n"
+        "    .cb-body { height:min(400px, calc(100vh - 280px)); overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:12px; background:var(--cb-bg); scroll-behavior:smooth; }\n"
+        "    @media (max-width: 480px) { .cb-body { height:min(350px, calc(100vh - 220px)); padding:12px; gap:10px; } .cb-head { padding:12px 14px; } .cb-title { font-size:14px; } }\n"
         "    .cb-body::-webkit-scrollbar { width:6px; }\n"
         "    .cb-body::-webkit-scrollbar-track { background:transparent; }\n"
         "    .cb-body::-webkit-scrollbar-thumb { background:var(--cb-border); border-radius:999px; }\n"
         "    .cb-body::-webkit-scrollbar-thumb:hover { background:var(--cb-muted); }\n"
-        "    .cb-input { display:flex; gap:12px; padding:16px 20px; border-top:1px solid var(--cb-border); background:var(--cb-card); backdrop-filter:blur(10px); }\n"
-        "    .cb-input input { flex:1; padding:12px 16px; border-radius:calc(var(--cb-radius) - 4px); border:1.5px solid var(--cb-border); background:var(--cb-bg); color:var(--cb-text); outline:none; font-size:14px; transition:all .2s ease; }\n"
+        "    .cb-input { display:flex; gap:10px; padding:14px 16px; border-top:1px solid var(--cb-border); background:var(--cb-card); backdrop-filter:blur(10px); }\n"
+        "    .cb-input input { flex:1; padding:10px 14px; border-radius:calc(var(--cb-radius) - 4px); border:1.5px solid var(--cb-border); background:var(--cb-bg); color:var(--cb-text); outline:none; font-size:13px; transition:all .2s ease; }\n"
+        "    @media (max-width: 480px) { .cb-input { padding:12px 14px; gap:8px; } .cb-input input { padding:9px 12px; font-size:13px; } }\n"
         "    .cb-input input:focus { border-color:var(--cb-accent); box-shadow:0 0 0 3px color-mix(in srgb, var(--cb-accent) 10%, transparent); }\n"
         "    .cb-input input::placeholder { color:var(--cb-muted); }\n"
-        "    .cb-send { padding:12px 20px; border-radius:calc(var(--cb-radius) - 4px); border:none; background:linear-gradient(135deg, var(--cb-accent), color-mix(in srgb, var(--cb-accent) 85%, black)); color:#fff; font-weight:600; cursor:pointer; font-size:14px; transition:all .2s ease; box-shadow:0 2px 8px color-mix(in srgb, var(--cb-accent) 30%, transparent); }\n"
+        "    .cb-send { padding:10px 18px; border-radius:calc(var(--cb-radius) - 4px); border:none; background:linear-gradient(135deg, var(--cb-accent), color-mix(in srgb, var(--cb-accent) 85%, black)); color:#fff; font-weight:600; cursor:pointer; font-size:13px; transition:all .2s ease; box-shadow:0 2px 8px color-mix(in srgb, var(--cb-accent) 30%, transparent); }\n"
+        "    @media (max-width: 480px) { .cb-send { padding:9px 16px; font-size:13px; } }\n"
         "    .cb-send:hover { transform:translateY(-1px); box-shadow:0 4px 12px color-mix(in srgb, var(--cb-accent) 40%, transparent); }\n"
         "    .cb-send:active { transform:translateY(0); }\n"
         "    .cb-send:disabled { opacity:0.5; cursor:not-allowed; }\n"
-        "    .cb-footer { padding:8px 16px; font-size:11px; color:var(--cb-muted); text-align:center; background:var(--cb-card); border-top:1px solid var(--cb-border); }\n"
+        "    .cb-footer { padding:8px 14px; font-size:10px; color:var(--cb-muted); text-align:center; background:var(--cb-card); border-top:1px solid var(--cb-border); }\n"
+        "    @media (max-width: 480px) { .cb-footer { padding:6px 12px; font-size:9px; } }\n"
         "    .cb-footer a { color:var(--cb-accent); text-decoration:none; font-weight:600; transition:opacity .2s; }\n"
         "    .cb-footer a:hover { opacity:0.8; }\n"
         "    .row { display:flex; width:100%; animation:slideUp .3s ease; }\n"
         "    @keyframes slideUp { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }\n"
-        "    .bubble { max-width:82%; padding:12px 16px; border-radius:calc(var(--cb-radius) + 4px); line-height:1.6; font-size:14px; word-break:break-word; box-shadow:0 2px 12px rgba(0,0,0,0.06); position:relative; transition:all .2s ease; }\n"
+        "    .bubble { max-width:82%; padding:11px 14px; border-radius:calc(var(--cb-radius) + 4px); line-height:1.5; font-size:13px; word-break:break-word; box-shadow:0 2px 12px rgba(0,0,0,0.06); position:relative; transition:all .2s ease; }\n"
+        "    @media (max-width: 480px) { .bubble { max-width:85%; padding:10px 12px; font-size:13px; } }\n"
         "    .bubble:hover { box-shadow:0 4px 16px rgba(0,0,0,0.1); }\n"
         "    .bubble.me { margin-left:auto; background:var(--cb-bubble-me); color:#fff; border-bottom-right-radius:6px; box-shadow:0 2px 12px color-mix(in srgb, var(--cb-accent) 20%, transparent); }\n"
         "    .bubble.bot { margin-right:auto; background:var(--cb-bubble-bot); color:var(--cb-text); border:1.5px solid var(--cb-border); border-bottom-left-radius:6px; }\n"
@@ -4178,6 +4229,10 @@ def widget_js():
         "  function applyTheme(){\n"
         "    var root=document.documentElement;\n"
         "    try{\n"
+        "      var BTN_BG=TRANSPARENT?'transparent':'linear-gradient(135deg, '+ACC+', color-mix(in srgb, '+ACC+' 80%, black))';"
+        "      var BTN_SHADOW=TRANSPARENT?'none':'0 8px 32px rgba(0,0,0,0.12), 0 2px 8px rgba(0,0,0,0.08)';"
+        "      root.style.setProperty('--cb-btn-bg', BTN_BG);\n"
+        "      root.style.setProperty('--cb-btn-shadow', BTN_SHADOW);\n"
         "      root.style.setProperty('--cb-accent', ACC);\n"
         "      root.style.setProperty('--cb-bg', BG);\n"
         "      root.style.setProperty('--cb-card', CARD);\n"
@@ -4188,6 +4243,9 @@ def widget_js():
         "      root.style.setProperty('--cb-bubble-bot', BOT);\n"
         "      root.style.setProperty('--cb-shadow', SHADOW);\n"
         "      root.style.setProperty('--cb-radius', RADIUS);\n"
+        "      root.style.setProperty('--cb-lsize', LSIZE+'px');\n"
+        "      root.style.setProperty('--cb-icon-scale', ISCALE+'%');\n"
+        "      root.style.setProperty('--cb-icon-fs', (ISCALE*0.4)+'px');\n"
         "      root.setAttribute('data-cb-theme', T);\n"
         "    }catch(__){ }\n"
         "  }\n"
@@ -4198,6 +4256,7 @@ def widget_js():
         "    POS = (C.position||POS);\n"
         "    T = (C.theme||T);\n"
         "    ACC=(C.buttonColor||C.accent||ACC); BG=(C.bg||BG); CARD=(C.card||CARD); TEXT=(C.text||TEXT); MUTED=(C.muted||MUTED); BORDER=(C.border||BORDER); ME=(C.bubbleMe||ME); BOT=(C.bubbleBot||BOT); SHADOW=(C.shadow||SHADOW); RADIUS=(C.radius!==undefined?(C.radius+'px'):RADIUS);\n"
+        "    LSIZE=(C.launcherSize||LSIZE); ISCALE=(C.iconScale||ISCALE); TRANSPARENT=(C.transparentBubble!==undefined?C.transparentBubble:TRANSPARENT);\n"
         "    applyTheme();\n"
         "    try{ alignPanel(); }catch(__){ }\n"
         "    try{ var t=panel.querySelector('.cb-title'); if(t){ t.textContent=N||'Chatbot'; } }catch(__){ }\n"
@@ -4228,7 +4287,9 @@ def widget_js():
         "  // **UPDATED ICON LOGIC**\n"
         "  // 1. Check if Icon is URL (http/data). 2. Check if Icon exists (Emoji/Text). 3. Default SVG.\n"
         "  if(I && (I.indexOf('http')===0 || I.indexOf('data:image')===0)){\n"
-        "     var img = document.createElement('img'); img.src=I; img.style.width='32px'; img.style.height='32px'; img.style.borderRadius='50%';\n"
+        "     var img = document.createElement('img'); img.src=I; img.style.objectFit='cover';\n"
+        "     if(TRANSPARENT){ img.style.width=ISCALE+'%'; img.style.height=ISCALE+'%'; img.style.borderRadius=RADIUS; }\n"
+        "     else { img.style.width=ISCALE+'%'; img.style.height=ISCALE+'%'; img.style.borderRadius='50%'; }\n"
         "     btn.appendChild(img);\n"
         "  } else if (I) {\n"
         "     var spn = document.createElement('span'); spn.className='cb-emoji'; spn.textContent=I;\n"
