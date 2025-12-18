@@ -118,13 +118,14 @@ def _llm_intent_detection(message: str, history: list = None) -> dict:
     # LLM prompt for intent detection
     prompt = f"""You are analyzing if a user message is SPECIFICALLY requesting to book, reschedule, cancel, or check an appointment. 
 
-IMPORTANT: Only return is_booking=true if the user is EXPLICITLY trying to:
+IMPORTANT: Only return is_booking=true if the user is EXPLICITLY trying to (even with typos):
 1. Book/schedule a new appointment
 2. Reschedule an existing appointment  
 3. Cancel an appointment
 4. Check appointment status
 
-General questions, greetings, or asking about information are NOT booking intents, even if the bot is an appointment agent.
+General questions about the bot's identity (who are you, who made you) or generic greetings (hello, hi) are NOT booking intents.
+However, "How can I book?" or "I want to schedule" ARE booking intents.
 
 Previous conversation:
 {context if context else "(No previous messages)"}
@@ -144,6 +145,9 @@ BOOKING Examples (is_booking=true):
 - "Can I schedule for tomorrow 3pm?" → {{"is_booking": true, "action": "book", "confidence": 0.9}}
 - "reschedule my appointment" → {{"is_booking": true, "action": "reschedule", "confidence": 0.95}}
 - "cancel my booking" → {{"is_booking": true, "action": "cancel", "confidence": 0.95}}
+- "how can i dook the appomnyinment" (typos) → {{"is_booking": true, "action": "book", "confidence": 0.85}}
+- "chek my staus" (typos) → {{"is_booking": true, "action": "status", "confidence": 0.85}}
+- "how to book?" → {{"is_booking": true, "action": "book", "confidence": 0.9}}
 
 NON-BOOKING Examples (is_booking=false):
 - "hello" → {{"is_booking": false, "action": null, "confidence": 0.95}}
@@ -261,6 +265,8 @@ def _detect_booking_intent(message: str, history: list = None) -> dict:
     booking_keywords = [
         # English
         r'\b(book|schedule|appointment|reserve|slot|meeting)\b',
+        # Common typos (English)
+        r'\b(dook|bok|boo|shcedule|scheduel|appoinment|appointmen|appoiment|appomnyinment|apointment|apoyntment|apptimnet|appintment)\b',
         # Hindi (Devanagari + transliteration)
         r'\b(बुक|अपॉइंटमेंट|समय|मिलना|बुकिंग|book|appointment|samay)\b',
         # Tamil
@@ -318,8 +324,10 @@ def _detect_booking_intent(message: str, history: list = None) -> dict:
     # Status/check keywords
     status_keywords = [
         r'\b(status|check|view|show|my\s+appointment)\b',
+        # Common typos (English)
+        r'\b(staus|satus|statuse|stauts|chekc|chek|chk|veiw|viwe)\b',
         r'\b(स्थिति|देखो|मेरा|check|status)\b',
-        r'\b(நிலை|பார்|என்|appointment)\b',
+        r'\b(நிலை|பார்|என்)\b',
         r'\b(స్థితి|చూడు|నా)\b',
         r'\b(ಸ್ಥಿತಿ|ನೋಡಿ|ನನ್ನ)\b',
         r'\b(സ്ഥിതി|കാണുക|എന്റെ)\b',
@@ -645,6 +653,12 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
         
         # Smart booking intent detection for appointment bots
         if (behavior or '').strip().lower() == 'appointment':
+            def _reply_with_history(text, citations=None, similarity=0.0):
+                if body.session_id:
+                    _save_conversation_message(conn, body.session_id, body.org_id, bot_id, "user", body.message)
+                    _save_conversation_message(conn, body.session_id, body.org_id, bot_id, "assistant", text)
+                return {"answer": text, "citations": citations or [], "similarity": similarity}
+
             import re
             msg = body.message.strip()
             m0lower = msg.lower()
@@ -785,13 +799,13 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
                     if not has_id:
                         _ensure_usage_table(conn)
                         _log_chat_usage(conn, body.org_id, bot_id, intent_result['confidence'], False)
-                        return {"answer": response_text, "citations": [], "similarity": intent_result['confidence']}
+                        return _reply_with_history(response_text, [], intent_result['confidence'])
                     # Has ID - continue to ID-based status check below
                 elif intent_type in ['new_booking', 'reschedule', 'cancel']:
                     # For other intents, return the prompt immediately
                     _ensure_usage_table(conn)
                     _log_chat_usage(conn, body.org_id, bot_id, intent_result['confidence'], False)
-                    return {"answer": response_text, "citations": [], "similarity": intent_result['confidence']}
+                    return _reply_with_history(response_text, [], intent_result['confidence'])
             
             # Continue with existing appointment ID management code
             def _norm_month(s: str) -> int:
@@ -965,7 +979,7 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
                         _log_audit(conn, body.org_id, bot_id, ap_id, "cancel", {})
                         _ensure_usage_table(conn)
                         _log_chat_usage(conn, body.org_id, bot_id, 1.0, False)
-                        return {"answer": f"Cancelled appointment ID: {ap_id}", "citations": [], "similarity": 1.0}
+                        return _reply_with_history(f"Cancelled appointment ID: {ap_id}", [], 1.0)
                     if ("reschedule" in lowmsg) or ("re schedule" in lowmsg) or ("change" in lowmsg) or ("reshedule" in lowmsg) or ("reschudule" in lowmsg) or ("rescedule" in lowmsg) or (" to " in lowmsg):
                         si_ei = None
                         m = re.search(r"\bto\b(.+)$", msg, re.IGNORECASE)
@@ -995,7 +1009,7 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
                             pass
                         _ensure_usage_table(conn)
                         _log_chat_usage(conn, body.org_id, bot_id, 1.0, False)
-                        return {"answer": f"Rescheduled ID {ap_id} to {new_si} - {new_ei}", "citations": [], "similarity": 1.0}
+                        return _reply_with_history(f"Rescheduled ID {ap_id} to {new_si} - {new_ei}", [], 1.0)
                     
                     # Status check - use multi-language responses
                     lang = intent_result.get('language', 'en')
@@ -1014,7 +1028,7 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
                     status_text = status_responses.get(lang, status_responses['en'])
                     _ensure_usage_table(conn)
                     _log_chat_usage(conn, body.org_id, bot_id, 1.0, False)
-                    return {"answer": status_text, "citations": [], "similarity": 1.0}
+                    return _reply_with_history(status_text, [], 1.0)
                 except Exception:
                     try:
                         _ensure_usage_table(conn)
@@ -1206,7 +1220,7 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
                                 _log_audit(conn, body.org_id, bot_id, apid, "calendar_patch_error", {"ext_id": ext_id})
                             _ensure_usage_table(conn)
                             _log_chat_usage(conn, body.org_id, bot_id, 1.0, False)
-                            return {"answer": f"Booked. ID: {apid}", "citations": [], "similarity": 1.0}
+                            return _reply_with_history(f"Booked. ID: {apid}", [], 1.0)
                         except Exception:
                             _ensure_usage_table(conn)
                             _log_chat_usage(conn, body.org_id, bot_id, 0.0, True)
@@ -1311,11 +1325,17 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
 
         context = "\n\n".join([c[0] for c in chunks])
         base = f"You are a {behavior} assistant."
+        if (behavior or '').strip().lower() == 'appointment':
+            base += f" You handle appointment booking. IMPORTANT: You MUST NOT ask the user for personal details (Name, Phone, Email, Time) to book an appointment. Instead, simply provide this booking link: {form_url} . For rescheduling, provide this link: {res_form_url} . Only for cancellation or status checks, you MUST ask the user for their Appointment ID. Tell users to type 'cancel' followed by their ID to cancel, or 'status' followed by their ID to check status."
+        suffix = " Keep responses short and informative."
+        if (behavior or '').strip().lower() == 'appointment':
+            suffix += " Do NOT ask for booking details (Name, Phone, etc). Use the provided links."
+        
         system = (
-            (base + " " + system_prompt + " Keep responses short and informative.")
+            (base + " " + system_prompt + suffix)
             if system_prompt
             else (
-                base + " Use only the provided context. If the answer is not in context, say: \"I don't have that information.\" Keep responses short and informative."
+                base + " Use only the provided context. If the answer is not in context, say: \"I don't have that information.\" " + suffix
             )
         )
         user = f"Context:\n{context}\n\nQuestion:\n{body.message}"
