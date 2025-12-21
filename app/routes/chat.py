@@ -61,6 +61,8 @@ class BotConfigBody(BaseModel):
     role: Optional[str] = None
     tone: Optional[str] = None
     welcome_message: Optional[str] = None
+    services: Optional[List[str]] = None
+    form_config: Optional[dict] = None
 
 class CalendarConfigBody(BaseModel):
     org_id: str
@@ -84,6 +86,19 @@ class CreateBotBody(BaseModel):
     role: Optional[str] = None
     tone: Optional[str] = None
     welcome_message: Optional[str] = None
+    services: Optional[List[str]] = None
+
+class LeadBody(BaseModel):
+    org_id: str
+    bot_id: str
+    name: str
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    interest_details: Optional[str] = None
+    comments: Optional[str] = None
+    conversation_summary: Optional[str] = None
+    interest_score: int = 0
+    session_id: Optional[str] = None
 
 router = APIRouter()
 client = Groq(api_key=settings.GROQ_API_KEY)
@@ -91,6 +106,18 @@ client = Groq(api_key=settings.GROQ_API_KEY)
 # Cache for LLM intent detection results (to reduce API calls)
 _INTENT_CACHE = {}
 _CACHE_MAX_SIZE = 500
+
+def _ensure_form_config_column(conn):
+    with conn.cursor() as cur:
+        cur.execute(
+            "select count(*) from information_schema.columns where table_name=%s and column_name=%s",
+            ("chatbots", "form_config"),
+        )
+        if cur.fetchone()[0] == 0:
+            try:
+                cur.execute("alter table chatbots add column form_config jsonb")
+            except Exception:
+                pass
 
 def _llm_intent_detection(message: str, history: list = None) -> dict:
     """
@@ -422,6 +449,38 @@ def _detect_booking_intent(message: str, history: list = None) -> dict:
     }
 
 
+def _detect_sales_intent(message: str) -> dict:
+    """
+    Detect sales/lead intent from message.
+    Returns: {'is_sales': bool, 'confidence': float}
+    """
+    import re
+    msg = message.lower().strip()
+    
+    # Strong intent keywords (0.9 confidence)
+    strong_keywords = [
+        r'\b(demo|demonstration|quote|price|pricing|cost|buy|purchase|interested|enquiry|inquiry)\b',
+        r'\b(talk to sales|speak to sales|contact sales|talk to an expert)\b',
+        r'\b(book a demo|schedule a demo|request a demo)\b',
+        r'\b(how much|what is the price|pricing details)\b'
+    ]
+    
+    # Moderate intent keywords (0.6 confidence)
+    moderate_keywords = [
+        r'\b(details|more info|information|help me)\b',
+        r'\b(contact|connect|support)\b'
+    ]
+    
+    for pat in strong_keywords:
+        if re.search(pat, msg):
+            return {'is_sales': True, 'confidence': 0.9}
+            
+    for pat in moderate_keywords:
+        if re.search(pat, msg):
+            return {'is_sales': True, 'confidence': 0.6}
+            
+    return {'is_sales': False, 'confidence': 0.0}
+
 def _hybrid_intent_detection(message: str, history: list = None) -> dict:
     """
     Hybrid intent detection combining regex and LLM.
@@ -641,6 +700,606 @@ def _log_chat_usage(conn, org_id: str, bot_id: str, similarity: float, fallback:
         )
 
 
+@router.post("/leads/submit")
+def submit_lead(body: LeadBody, x_bot_key: Optional[str] = Header(default=None)):
+    conn = get_conn()
+    try:
+        behavior, _, public_api_key = get_bot_meta(conn, body.bot_id, body.org_id)
+        if public_api_key:
+             if not x_bot_key or x_bot_key != public_api_key:
+                pass 
+        
+        # Auto-generate summary from conversation history if not provided
+        summary = body.conversation_summary
+        if not summary and body.session_id:
+            try:
+                hist = _get_conversation_history(conn, body.session_id, body.org_id, body.bot_id, max_messages=20)
+                if hist:
+                    lines = []
+                    for msg in hist:
+                        role = msg.get("role", "unknown")
+                        content = msg.get("content", "")
+                        lines.append(f"{role}: {content}")
+                    summary = "\n".join(lines)
+            except Exception as e:
+                print(f"Error fetching history for summary: {e}")
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                insert into leads (org_id, bot_id, name, email, phone, interest_details, comments, conversation_summary, interest_score, status, session_id)
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                returning id
+                """,
+                (normalize_org_id(body.org_id), body.bot_id, body.name, body.email, body.phone, body.interest_details, body.comments, summary, body.interest_score, "new", body.session_id)
+            )
+            lid = cur.fetchone()[0]
+        return {"id": lid, "status": "success"}
+    finally:
+        conn.close()
+
+@router.get("/leads/{bot_id}")
+def get_leads(bot_id: str, org_id: str):
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "select id, name, email, phone, interest_details, status, created_at, interest_score, conversation_summary, comments from leads where bot_id=%s and org_id=%s order by created_at desc",
+                (bot_id, normalize_org_id(org_id))
+            )
+            rows = cur.fetchall()
+        return [{"id": r[0], "name": r[1], "email": r[2], "phone": r[3], "details": r[4], "status": r[5], "created_at": r[6], "score": r[7], "summary": r[8], "comments": r[9]} for r in rows]
+    finally:
+        conn.close()
+
+class UpdateLeadBody(BaseModel):
+    status: str
+    org_id: str
+
+@router.patch("/leads/{lead_id}/status")
+def update_lead_status(lead_id: int, body: UpdateLeadBody):
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "update leads set status=%s where id=%s and org_id=%s",
+                (body.status, lead_id, normalize_org_id(body.org_id))
+            )
+            conn.commit()
+        return {"status": "success"}
+    finally:
+        conn.close()
+
+@router.delete("/leads/{lead_id}")
+def delete_lead(lead_id: int, org_id: str):
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "delete from leads where id=%s and org_id=%s",
+                (lead_id, normalize_org_id(org_id))
+            )
+            conn.commit()
+        return {"status": "success"}
+    finally:
+        conn.close()
+
+@router.get("/form/lead/{bot_id}")
+def get_lead_form(bot_id: str, org_id: str, bot_key: Optional[str] = None, session_id: Optional[str] = None):
+    # Fetch services and form config from DB
+    conn = get_conn()
+    services_list = []
+    form_config = {}
+    try:
+        _ensure_form_config_column(conn)
+        with conn.cursor() as cur:
+            cur.execute("select services, form_config from chatbots where id=%s", (bot_id,))
+            row = cur.fetchone()
+            if row:
+                if row[0]:
+                    services_list = row[0]
+                if row[1]:
+                    if isinstance(row[1], str):
+                        try:
+                            form_config = json.loads(row[1])
+                        except Exception:
+                            form_config = {}
+                    else:
+                        form_config = row[1]
+    finally:
+        conn.close()
+
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <style>
+        :root {{
+            --primary: #2563eb;
+            --primary-hover: #1d4ed8;
+            --bg: #f3f4f6;
+            --card-bg: #ffffff;
+            --text-main: #1f2937;
+            --text-muted: #6b7280;
+            --border: #e5e7eb;
+            --error: #ef4444;
+        }}
+        body {{ 
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; 
+            padding: 20px; 
+            margin: 0; 
+            background: var(--bg); 
+            color: var(--text-main);
+            display: flex;
+            justify-content: center;
+            min-height: 100vh;
+        }}
+        #form-container {{
+            background: var(--card-bg);
+            padding: 32px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            width: 100%;
+            max-width: 480px;
+            box-sizing: border-box;
+        }}
+        h2 {{ margin-top: 0; margin-bottom: 24px; font-size: 24px; font-weight: 700; text-align: center; color: #111827; }}
+        .form-group {{ margin-bottom: 20px; }}
+        label {{ display: block; margin-bottom: 8px; font-weight: 600; font-size: 14px; color: #374151; }}
+        .input-wrapper {{ position: relative; }}
+        input, textarea, select {{ 
+            width: 100%; 
+            padding: 12px 16px; 
+            border: 1px solid var(--border); 
+            border-radius: 8px; 
+            font-size: 15px; 
+            box-sizing: border-box; 
+            transition: all 0.2s;
+            background: #f9fafb;
+        }}
+        input:focus, textarea:focus, select:focus {{ 
+            outline: none; 
+            border-color: var(--primary); 
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1); 
+            background: #fff;
+        }}
+        input.invalid {{ border-color: var(--error); box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.1); }}
+        
+        button {{ 
+            width: 100%; 
+            padding: 14px; 
+            background: var(--primary); 
+            color: white; 
+            border: none; 
+            border-radius: 8px; 
+            font-weight: 600; 
+            font-size: 16px;
+            cursor: pointer; 
+            transition: background 0.2s; 
+            margin-top: 8px;
+        }}
+        button:hover {{ background: var(--primary-hover); }}
+        button:disabled {{ opacity: 0.7; cursor: not-allowed; }}
+        
+        .success {{ display: none; text-align: center; padding: 40px 20px; background: white; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }}
+        .success h3 {{ color: #059669; margin-bottom: 12px; font-size: 22px; }}
+        .success p {{ color: var(--text-muted); line-height: 1.5; }}
+        
+        .checkbox-group {{ display: flex; flex-direction: column; gap: 10px; }}
+        .checkbox-item {{ 
+            display: flex; 
+            align-items: center; 
+            gap: 12px; 
+            padding: 10px; 
+            border: 1px solid var(--border); 
+            border-radius: 8px; 
+            cursor: pointer;
+            transition: background 0.1s;
+        }}
+        .checkbox-item:hover {{ background: #f9fafb; }}
+        .checkbox-item input {{ width: 18px; height: 18px; margin: 0; cursor: pointer; }}
+        
+        .helper-text {{ font-size: 12px; color: var(--text-muted); margin-top: 6px; }}
+        .error-msg {{ color: var(--error); font-size: 13px; margin-top: 6px; display: none; font-weight: 500; }}
+        
+        .tag {{ 
+            background: #eff6ff; 
+            color: #1d4ed8; 
+            padding: 6px 12px; 
+            border-radius: 20px; 
+            font-size: 13px; 
+            display: inline-flex; 
+            align-items: center; 
+            gap: 6px; 
+            font-weight: 500;
+        }}
+        .tag span {{ cursor: pointer; opacity: 0.6; font-size: 16px; line-height: 1; }}
+        .tag span:hover {{ opacity: 1; }}
+        
+        /* Input prefix for phone */
+        .phone-input-container {{ display: flex; position: relative; }}
+        .phone-prefix {{
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0 12px;
+            background: #f3f4f6;
+            border: 1px solid var(--border);
+            border-right: none;
+            border-radius: 8px 0 0 8px;
+            color: #4b5563;
+            font-weight: 500;
+            font-size: 14px;
+            white-space: nowrap;
+        }}
+        .phone-input-container input {{ border-radius: 0 8px 8px 0; }}
+        .phone-input-container.has-prefix input {{ border-radius: 0 8px 8px 0; }}
+        .phone-input-container:not(.has-prefix) input {{ border-radius: 8px; }}
+        
+        .required-mark {{ color: var(--error); margin-left: 4px; }}
+        
+      </style>
+    </head>
+    <body>
+      <div id="form-container">
+        <h2>Contact Us</h2>
+        <div class="form-group">
+          <label>Name <span class="required-mark">*</span></label>
+          <input type="text" id="name" required placeholder="Your full name">
+        </div>
+        <div class="form-group">
+          <label>Email <span class="required-mark">*</span></label>
+          <input type="email" id="email" required placeholder="you@company.com">
+          <div id="email-helper" class="helper-text"></div>
+          <div id="email-error" class="error-msg">Please enter a valid email address.</div>
+        </div>
+        <div class="form-group">
+          <label>Phone <span class="required-mark">*</span></label>
+          <div class="phone-input-container" id="phone-container">
+             <!-- Prefix injected by JS if needed -->
+             <input type="tel" id="phone" required placeholder="123 456 7890">
+          </div>
+          <div id="phone-helper" class="helper-text"></div>
+          <div id="phone-error" class="error-msg">Please enter a valid phone number.</div>
+        </div>
+        
+        <div class="form-group">
+          <label>Services of Interest <span class="required-mark" id="services-required" style="display:none">*</span></label>
+          <div id="services-container">
+            {'<div class="checkbox-group">' + ''.join([f'<label class="checkbox-item"><input type="checkbox" value="{s}" onchange="updateServices()">{s}</label>' for s in services_list]) + '</div>' if services_list else ''}
+            <div class="service-input-group" style="display: flex; gap: 8px; margin-bottom: 12px; margin-top: 12px;">
+              <input type="text" id="service-input" placeholder="Other service..." onkeypress="if(event.key==='Enter'){{event.preventDefault();addService();}}">
+              <button type="button" onclick="addService()" style="width: auto; padding: 0 20px; margin: 0; background: #4b5563;">Add</button>
+            </div>
+            <div id="tags-container" style="display: flex; flex-wrap: wrap; gap: 8px;">
+              <!-- Tags will appear here -->
+            </div>
+            <input type="hidden" id="interest-details-hidden">
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label>Additional Comments</label>
+          <textarea id="interest" rows="3" placeholder="Any specific requirements or questions?"></textarea>
+        </div>
+        <button onclick="submitForm()">Submit Enquiry</button>
+      </div>
+      <div id="success" class="success">
+        <div style="font-size: 48px; margin-bottom: 16px;">🎉</div>
+        <h3>Thank you!</h3>
+        <p>We have received your details and will contact you shortly.</p>
+      </div>
+      <script>
+        const services = [];
+        const preDefinedServices = {services_list};
+        const formConfig = {json.dumps(form_config)};
+
+        // Initialize UI based on config
+        (function initUI() {{
+            // Services required check
+            if (preDefinedServices && preDefinedServices.length > 0) {{
+                const sr = document.getElementById('services-required');
+                if (sr) sr.style.display = 'inline';
+            }}
+
+            // Email helper and placeholder
+            const emailInput = document.getElementById('email');
+            if (formConfig.email_domains && formConfig.email_domains.length > 0) {{
+                const domains = formConfig.email_domains.join(', ');
+                document.getElementById('email-helper').textContent = 'Allowed domains: ' + domains;
+                if (formConfig.email_domains.length === 1) {{
+                    emailInput.placeholder = 'name@' + formConfig.email_domains[0];
+                }}
+            }}
+
+            // Phone UI
+            const phoneContainer = document.getElementById('phone-container');
+            const phoneInput = document.getElementById('phone');
+            const phoneHelper = document.getElementById('phone-helper');
+            
+            if (formConfig.phone_country_code) {{
+                const prefix = document.createElement('div');
+                prefix.className = 'phone-prefix';
+                prefix.textContent = formConfig.phone_country_code;
+                phoneContainer.insertBefore(prefix, phoneInput);
+                phoneContainer.classList.add('has-prefix');
+            }}
+
+            let helperText = [];
+            if (formConfig.phone_restriction) {{
+                if (formConfig.phone_restriction === 'digits_only') {{
+                    helperText.push('Digits only');
+                    phoneInput.placeholder = '1234567890';
+                }}
+                if (formConfig.phone_restriction === '10_digits') {{
+                    helperText.push('10 digits required');
+                    phoneInput.placeholder = '9876543210';
+                }}
+                if (formConfig.phone_restriction === '10_plus_digits') {{
+                    helperText.push('Min 10 digits');
+                }}
+            }}
+            if (helperText.length > 0) {{
+                phoneHelper.textContent = helperText.join(', ');
+            }}
+        }})();
+
+        function updateServices() {{
+          const checkboxes = document.querySelectorAll('.checkbox-item input:checked');
+          const checked = Array.from(checkboxes).map(c => c.value);
+          // Combine checked with manually added services
+          const all = [...new Set([...checked, ...services])];
+          document.getElementById('interest-details-hidden').value = all.join(', ');
+        }}
+
+        function addService() {{
+          const input = document.getElementById('service-input');
+          const val = input.value.trim();
+          if (val && !services.includes(val)) {{
+            services.push(val);
+            renderTags();
+            input.value = '';
+            updateServices();
+          }}
+        }}
+
+        function removeService(idx) {{
+          services.splice(idx, 1);
+          renderTags();
+          updateServices();
+        }}
+
+        function renderTags() {{
+          const container = document.getElementById('tags-container');
+          container.innerHTML = services.map((s, i) => `
+            <span class="tag">
+              ${{s}}
+              <span onclick="removeService(${{i}})">&times;</span>
+            </span>
+          `).join('');
+        }}
+        
+        // Initialize
+        updateServices();
+
+        // Validation helpers
+        function validateEmail(email) {{
+          const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+          if (!re.test(email)) return false;
+          
+          // Domain restriction
+          if (formConfig.email_domains && formConfig.email_domains.length > 0) {{
+            const domain = email.split('@')[1].toLowerCase();
+            return formConfig.email_domains.some(d => domain === d.toLowerCase() || domain.endsWith('.' + d.toLowerCase()));
+          }}
+          return true;
+        }}
+
+        function validatePhone(phone) {{
+          if (!phone) return true;
+          
+          let cleanPhone = phone.replace(/[\s-]/g, '');
+          const digits = phone.replace(/\D/g, '');
+          
+          // Country code validation logic
+          if (formConfig.phone_country_code) {{
+             const code = formConfig.phone_country_code;
+             const codeDigits = code.replace(/\D/g, '');
+             
+             // If user typed the code, strip it for length check
+             if (cleanPhone.startsWith(code) || cleanPhone.startsWith('+' + codeDigits) || cleanPhone.startsWith('00' + codeDigits)) {{
+                 // It has the code, effectively valid prefix-wise
+             }} else {{
+                 // User didn't type code, that's fine if we are showing the prefix
+             }}
+          }}
+
+          const restriction = formConfig.phone_restriction || '';
+          
+          // Calculate effective length (ignoring country code if present in input)
+          let effectiveDigits = digits;
+          if (formConfig.phone_country_code) {{
+             const codeDigits = formConfig.phone_country_code.replace(/\D/g, '');
+             if (digits.startsWith(codeDigits)) {{
+                 effectiveDigits = digits.substring(codeDigits.length);
+             }}
+          }}
+          
+          if (restriction === 'digits_only') {{
+             return !/[a-zA-Z]/.test(phone) && effectiveDigits.length >= 7; 
+          }} else if (restriction === '10_digits') {{
+             return effectiveDigits.length === 10;
+          }} else if (restriction === '10_plus_digits') {{
+             return effectiveDigits.length >= 10;
+          }}
+          
+          return digits.length >= 7;
+        }}
+
+        // Update error messages based on config
+        const emailErrorMsg = document.getElementById('email-error');
+        if (formConfig.email_domains && formConfig.email_domains.length > 0) {{
+            emailErrorMsg.textContent = 'Please enter a valid email address from allowed domains (' + formConfig.email_domains.join(', ') + ').';
+        }}
+        
+        const phoneErrorMsg = document.getElementById('phone-error');
+        if (formConfig.phone_country_code || formConfig.phone_restriction) {{
+            let msg = '';
+            
+            // If prefix is shown, we don't need to tell them to start with it, just valid number
+            if (formConfig.phone_restriction === '10_digits') {{
+                msg = 'Must be exactly 10 digits.';
+            }} else if (formConfig.phone_restriction === '10_plus_digits') {{
+                msg = 'Must be at least 10 digits.';
+            }} else if (!msg) {{
+                msg = 'Please enter a valid phone number.';
+            }}
+            
+            phoneErrorMsg.textContent = msg;
+        }}
+
+        // Add event listeners
+        const emailInput = document.getElementById('email');
+        const phoneInput = document.getElementById('phone');
+        const emailError = document.getElementById('email-error');
+        const phoneError = document.getElementById('phone-error');
+
+        if (emailInput) {{
+            emailInput.addEventListener('input', function() {{
+              if (validateEmail(this.value)) {{
+                emailError.style.display = 'none';
+                this.classList.remove('invalid');
+              }}
+            }});
+            
+            emailInput.addEventListener('blur', function() {{
+              if (!validateEmail(this.value)) {{
+                emailError.style.display = 'block';
+                this.classList.add('invalid');
+              }}
+            }});
+        }}
+
+        if (phoneInput) {{
+            phoneInput.addEventListener('input', function() {{
+              if (validatePhone(this.value)) {{
+                phoneError.style.display = 'none';
+                this.classList.remove('invalid');
+              }}
+            }});
+            
+            phoneInput.addEventListener('blur', function() {{
+               if (!validatePhone(this.value)) {{
+                phoneError.style.display = 'block';
+                this.classList.add('invalid');
+              }}
+            }});
+        }}
+
+        async function submitForm() {{
+          const btn = document.querySelector('button[onclick="submitForm()"]');
+          
+          // Validate inputs
+          const email = document.getElementById('email').value;
+          const phone = document.getElementById('phone').value;
+          let valid = true;
+          
+          // Validate Services (Required if defined)
+          if (preDefinedServices && preDefinedServices.length > 0) {{
+             const selectedServices = document.getElementById('interest-details-hidden').value;
+             if (!selectedServices) {{
+                 alert('Please select at least one service of interest.');
+                 return;
+             }}
+          }}
+          
+          if (!validateEmail(email)) {{
+            if (emailError) emailError.style.display = 'block';
+            if (emailInput) emailInput.classList.add('invalid');
+            valid = false;
+          }}
+          
+          if (!validatePhone(phone)) {{
+            if (phoneError) phoneError.style.display = 'block';
+            if (phoneInput) phoneInput.classList.add('invalid');
+            valid = false;
+          }}
+          
+          if (!valid) return;
+
+          btn.disabled = true;
+          btn.textContent = 'Submitting...';
+          
+          const comments = document.getElementById('interest').value;
+          const serviceList = document.getElementById('interest-details-hidden').value;
+          const finalServices = serviceList ? serviceList : comments;
+          
+          // Prepare phone with country code if needed
+          let finalPhone = document.getElementById('phone').value;
+          if (formConfig.phone_country_code) {{
+              const code = formConfig.phone_country_code;
+              const codeDigits = code.replace(/\D/g, '');
+              const clean = finalPhone.replace(/[\s-]/g, '');
+              // If not already starting with code
+              if (!clean.startsWith(code) && !clean.startsWith(codeDigits) && !clean.startsWith('00' + codeDigits)) {{
+                  finalPhone = code + ' ' + finalPhone;
+              }}
+          }}
+
+          const data = {{
+            org_id: "{org_id}",
+            bot_id: "{bot_id}",
+            session_id: "{session_id or ''}",
+            name: document.getElementById('name').value,
+            email: document.getElementById('email').value,
+            phone: finalPhone,
+            interest_details: serviceList,
+            comments: comments,
+            interest_score: 50 // Default score
+          }};
+          
+          try {{
+            const res = await fetch('/api/leads/submit', {{
+              method: 'POST',
+              headers: {{ 'Content-Type': 'application/json', 'x-bot-key': '{bot_key or ""}' }},
+              body: JSON.stringify(data)
+            }});
+            
+            if (res.ok) {{
+              const json = await res.json();
+              document.getElementById('form-container').style.display = 'none';
+              document.getElementById('success').style.display = 'block';
+              try {{
+                if (window.opener) {{
+                    window.opener.postMessage({{ type: 'LEAD_SUBMITTED', id: json.id }}, '*');
+                }} else if (window.parent) {{
+                    window.parent.postMessage({{ type: 'LEAD_SUBMITTED', id: json.id }}, '*');
+                }}
+              }} catch(e) {{ console.error(e); }}
+              setTimeout(function() {{ window.close(); }}, 3000);
+            }} else {{
+              alert('Error submitting form. Please try again.');
+              btn.disabled = false;
+              btn.textContent = 'Submit Enquiry';
+            }}
+          }} catch (e) {{
+            console.error(e);
+            alert('Error submitting form.');
+            btn.disabled = false;
+            btn.textContent = 'Submit Enquiry';
+          }}
+        }}
+      </script>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html)
+
+
+
+
+
 @router.post("/chat/{bot_id}")
 def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=None)):
     conn = get_conn()
@@ -650,6 +1309,20 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
             if not x_bot_key or x_bot_key != public_api_key:
                 raise HTTPException(status_code=403, detail="Invalid bot key")
         _rate_limit(bot_id, body.org_id)
+
+        # Check if user has already submitted a lead in this session
+        has_submitted_lead = False
+        if body.session_id:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "select 1 from leads where session_id=%s and org_id=%s and bot_id=%s limit 1",
+                        (body.session_id, normalize_org_id(body.org_id), bot_id)
+                    )
+                    if cur.fetchone():
+                        has_submitted_lead = True
+            except Exception as e:
+                print(f"Error checking lead submission: {e}")
         
         # Smart booking intent detection for appointment bots
         if (behavior or '').strip().lower() == 'appointment':
@@ -1259,6 +1932,38 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
             _ensure_usage_table(conn)
             _log_chat_usage(conn, body.org_id, bot_id, 0.0, False)
             return StreamingResponse(gen_hi(), media_type="text/event-stream")
+
+        # Sales Bot: Check for strong lead generation intent
+        beh_lower = (behavior or '').strip().lower()
+        if ('sale' in beh_lower or beh_lower == 'sales') and not has_submitted_lead:
+            try:
+                sales_intent = _detect_sales_intent(body.message)
+                if sales_intent['is_sales'] and sales_intent['confidence'] >= 0.8:
+                    base = getattr(settings, 'PUBLIC_API_BASE_URL', '') or ''
+                    lead_form_url = f"{base}/api/form/lead/{bot_id}?org_id={body.org_id}" + (f"&bot_key={public_api_key}" if public_api_key else "")
+                    
+                    # Check for multi-language response needed
+                    is_indian_lang = any(ord(c) >= 0x0900 for c in body.message)
+                    
+                    if is_indian_lang:
+                         # Simple fallback for Indian languages - we can improve this later
+                         resp_text = f"कृपया हमारी बिक्री टीम से संपर्क करने के लिए इस फॉर्म को भरें: [Enquiry Form]({lead_form_url})"
+                    else:
+                         resp_text = f"I'd be happy to connect you with our sales team! Please fill out this quick form so we can assist you better: [Enquiry Form]({lead_form_url})"
+                    
+                    _ensure_usage_table(conn)
+                    _log_chat_usage(conn, body.org_id, bot_id, 1.0, False)
+                    
+                    if body.session_id:
+                        _save_conversation_message(conn, body.session_id, body.org_id, bot_id, "user", body.message)
+                        _save_conversation_message(conn, body.session_id, body.org_id, bot_id, "assistant", resp_text)
+                        
+                    return {"answer": resp_text, "citations": [], "similarity": 1.0}
+            except Exception as e:
+                print(f"[ERROR] Sales intent detection failed: {e}")
+                # Fall through to normal chat logic
+
+
         chunks = search_top_chunks(body.org_id, bot_id, body.message, settings.MAX_CONTEXT_CHUNKS)
         if not chunks:
             msg = body.message.strip().lower()
@@ -1324,6 +2029,12 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
             return {"answer": answer, "citations": [], "similarity": 0.0}
 
         context = "\n\n".join([c[0] for c in chunks])
+        
+        # Add context about lead submission
+        lead_context_prompt = ""
+        if has_submitted_lead:
+            lead_context_prompt = " The user has already submitted their details/enquiry form. Acknowledge this if relevant, and do not ask them to fill the form again unless explicitly requested."
+
         base = f"You are a {behavior} assistant."
         if (behavior or '').strip().lower() == 'appointment':
             base += f" You handle appointment booking. IMPORTANT: You MUST NOT ask the user for personal details (Name, Phone, Email, Time) to book an appointment. Instead, simply provide this booking link: {form_url} . For rescheduling, provide this link: {res_form_url} . Only for cancellation or status checks, you MUST ask the user for their Appointment ID. Tell users to type 'cancel' followed by their ID to cancel, or 'status' followed by their ID to check status."
@@ -1332,10 +2043,10 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
             suffix += " Do NOT ask for booking details (Name, Phone, etc). Use the provided links."
         
         system = (
-            (base + " " + system_prompt + suffix)
+            (base + " " + system_prompt + suffix + lead_context_prompt)
             if system_prompt
             else (
-                base + " Use only the provided context. If the answer is not in context, say: \"I don't have that information.\" " + suffix
+                base + " Use only the provided context. If the answer is not in context, say: \"I don't have that information.\" " + suffix + lead_context_prompt
             )
         )
         user = f"Context:\n{context}\n\nQuestion:\n{body.message}"
@@ -1413,13 +2124,14 @@ def create_bot(body: CreateBotBody, authorization: Optional[str] = Header(defaul
             ensure_col("role", "alter table chatbots add column if not exists role text")
             ensure_col("tone", "alter table chatbots add column if not exists tone text")
             ensure_col("welcome_message", "alter table chatbots add column if not exists welcome_message text")
+            ensure_col("services", "alter table chatbots add column if not exists services text[]")
             try:
                 cur.execute(
                     """
-                    insert into chatbots (id, org_id, behavior, system_prompt, name, website_url, role, tone, welcome_message)
-                    values (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    insert into chatbots (id, org_id, behavior, system_prompt, name, website_url, role, tone, welcome_message, services)
+                    values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     """,
-                    (bot_id, normalize_org_id(body.org_id), beh, body.system_prompt, nm, body.website_url, body.role, body.tone, body.welcome_message),
+                    (bot_id, normalize_org_id(body.org_id), beh, body.system_prompt, nm, body.website_url, body.role, body.tone, body.welcome_message, body.services),
                 )
             except Exception:
                 try:
@@ -1436,6 +2148,67 @@ def create_bot(body: CreateBotBody, authorization: Optional[str] = Header(defaul
     finally:
         conn.close()
 
+class UpdateBotBody(BaseModel):
+    org_id: str
+    behavior: Optional[str] = None
+    system_prompt: Optional[str] = None
+    name: Optional[str] = None
+    website_url: Optional[str] = None
+    role: Optional[str] = None
+    tone: Optional[str] = None
+    welcome_message: Optional[str] = None
+    services: Optional[List[str]] = None
+    form_config: Optional[dict] = None
+
+@router.put("/bots/{bot_id}")
+def update_bot(bot_id: str, body: UpdateBotBody, authorization: Optional[str] = Header(default=None)):
+    _require_auth(authorization, body.org_id)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            # Build dynamic update query
+            fields = []
+            params = []
+            if body.behavior:
+                fields.append("behavior=%s")
+                params.append(body.behavior)
+            if body.system_prompt is not None:
+                fields.append("system_prompt=%s")
+                params.append(body.system_prompt)
+            if body.name is not None:
+                fields.append("name=%s")
+                params.append(body.name)
+            if body.website_url is not None:
+                fields.append("website_url=%s")
+                params.append(body.website_url)
+            if body.role is not None:
+                fields.append("role=%s")
+                params.append(body.role)
+            if body.tone is not None:
+                fields.append("tone=%s")
+                params.append(body.tone)
+            if body.welcome_message is not None:
+                fields.append("welcome_message=%s")
+                params.append(body.welcome_message)
+            if body.services is not None:
+                fields.append("services=%s")
+                params.append(body.services)
+            if body.form_config is not None:
+                fields.append("form_config=%s")
+                params.append(json.dumps(body.form_config))
+                
+            if not fields:
+                return {"updated": False}
+                
+            sql = f"update chatbots set {', '.join(fields)}, updated_at=now() where id=%s and org_id=%s"
+            params.append(bot_id)
+            params.append(normalize_org_id(body.org_id))
+            
+            cur.execute(sql, tuple(params))
+            return {"updated": cur.rowcount > 0}
+    finally:
+        conn.close()
+
 @router.get("/bots")
 def list_bots(org_id: str, authorization: Optional[str] = Header(default=None)):
     if authorization:
@@ -1448,12 +2221,12 @@ def list_bots(org_id: str, authorization: Optional[str] = Header(default=None)):
         with conn.cursor() as cur:
             try:
                 cur.execute(
-                    "select id, name, behavior, system_prompt, public_api_key, website_url, role, tone, welcome_message from chatbots where org_id=%s",
+                    "select id, name, behavior, system_prompt, public_api_key, website_url, role, tone, welcome_message, services from chatbots where org_id=%s",
                     (org_n,),
                 )
             except Exception:
                 cur.execute(
-                    "select id, NULL as name, behavior, system_prompt, NULL as public_api_key, NULL as website_url, NULL as role, NULL as tone, NULL as welcome_message from chatbots where org_id=%s",
+                    "select id, NULL as name, behavior, system_prompt, NULL as public_api_key, NULL as website_url, NULL as role, NULL as tone, NULL as welcome_message, NULL as services from chatbots where org_id=%s",
                     (org_n,),
                 )
             rows = cur.fetchall()
@@ -1469,6 +2242,7 @@ def list_bots(org_id: str, authorization: Optional[str] = Header(default=None)):
                 "role": r[6] if len(r) > 6 else None,
                 "tone": r[7] if len(r) > 7 else None,
                 "welcome_message": r[8] if len(r) > 8 else None,
+                "services": r[9] if len(r) > 9 else None,
             })
         return {"bots": items}
     finally:
@@ -1489,6 +2263,39 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
                 raise HTTPException(status_code=403, detail="Invalid bot key")
         _rate_limit(bot_id, body.org_id)
         
+        # Check if user has already submitted a lead in this session
+        has_submitted_lead = False
+        if body.session_id:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "select 1 from leads where session_id=%s and org_id=%s and bot_id=%s limit 1",
+                        (body.session_id, normalize_org_id(body.org_id), bot_id)
+                    )
+                    if cur.fetchone():
+                        has_submitted_lead = True
+            except Exception as e:
+                print(f"Error checking lead submission: {e}")
+        
+        # Sales intent detection for sales bots
+        _is_sales_bot = (behavior or '').strip().lower() == 'sales'
+        if _is_sales_bot and not has_submitted_lead:
+            msg = body.message.strip()
+            sales_intent = _detect_sales_intent(msg)
+            if sales_intent.get('is_sales') and sales_intent.get('confidence', 0.0) >= 0.6:
+                base = getattr(settings, 'PUBLIC_API_BASE_URL', '') or ''
+                form_url = f"{base}/api/form/lead/{bot_id}?org_id={body.org_id}" + (f"&bot_key={public_api_key}" if public_api_key else "")
+                
+                response_text = f"I'd be happy to help! Please fill out our [enquiry form]({form_url}) so we can better understand your needs and connect you with the right person."
+                
+                def gen_sales_response():
+                    yield f"data: {response_text}\n\n"
+                    yield "event: end\n\n"
+                
+                _ensure_usage_table(conn)
+                _log_chat_usage(conn, body.org_id, bot_id, sales_intent.get('confidence', 0.0), False)
+                return StreamingResponse(gen_sales_response(), media_type="text/event-stream")
+
         # Smart booking intent detection for appointment bots
         _is_appointment_bot = (behavior or '').strip().lower() == 'appointment'
         _is_booking_query = False
@@ -2009,10 +2816,16 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
             return StreamingResponse(gen_fb(), media_type="text/event-stream")
 
         context = "\n\n".join([c[0] for c in chunks])
+        
+        # Add context about lead submission to system prompt
+        lead_context_prompt = ""
+        if has_submitted_lead:
+            lead_context_prompt = " The user has already submitted their details/enquiry form. Acknowledge this if relevant, and do not ask them to fill the form again unless explicitly requested."
+
         system = (
-            (system_prompt + " Keep responses short and informative.")
+            (system_prompt + lead_context_prompt + " Keep responses short and informative.")
             if system_prompt
-            else f"You are a {behavior} assistant. Use only the provided context. If the answer is not in context, say: \"I don't have that information.\" Keep responses short and informative."
+            else f"You are a {behavior} assistant. Use only the provided context. If the answer is not in context, say: \"I don't have that information.\"{lead_context_prompt} Keep responses short and informative."
         )
         user = f"Context:\n{context}\n\nQuestion:\n{body.message}"
         
@@ -2145,6 +2958,7 @@ def update_bot_config(bot_id: str, body: BotConfigBody, authorization: Optional[
     _require_auth(authorization, body.org_id)
     conn = get_conn()
     try:
+        _ensure_form_config_column(conn)
         with conn.cursor() as cur:
             import uuid
             nu = str(uuid.uuid5(uuid.NAMESPACE_URL, body.org_id))
@@ -2156,24 +2970,48 @@ def update_bot_config(bot_id: str, body: BotConfigBody, authorization: Optional[
                 beh = "sales"
             if beh and beh not in allowed:
                 raise HTTPException(status_code=400, detail=f"behavior must be one of {sorted(allowed)}")
+            
+            fc = json.dumps(body.form_config) if body.form_config is not None else None
+            
             try:
-                cur.execute(
-                    "update chatbots set behavior=%s, system_prompt=%s, website_url=%s, role=%s, tone=%s, welcome_message=%s where id=%s and org_id::text in (%s,%s,%s)",
-                    (beh or body.behavior, body.system_prompt, body.website_url, body.role, body.tone, body.welcome_message, bot_id, normalize_org_id(body.org_id), body.org_id, nu),
-                )
-            except Exception:
+                update_fields = ["behavior=%s", "system_prompt=%s", "website_url=%s", "role=%s", "tone=%s", "welcome_message=%s"]
+                params = [beh or body.behavior, body.system_prompt, body.website_url, body.role, body.tone, body.welcome_message]
+                
+                if body.services is not None:
+                    update_fields.append("services=%s")
+                    params.append(body.services)
+                
+                if fc is not None:
+                    update_fields.append("form_config=%s")
+                    params.append(fc)
+                
+                sql = f"update chatbots set {', '.join(update_fields)} where id=%s and org_id::text in (%s,%s,%s)"
+                params.extend([bot_id, normalize_org_id(body.org_id), body.org_id, nu])
+                
+                cur.execute(sql, tuple(params))
+            except Exception as e:
+                print(f"Error updating bot config: {e}")
                 cur.execute(
                     "update chatbots set behavior=%s, system_prompt=%s where id=%s and org_id::text in (%s,%s,%s)",
                     (beh or body.behavior, body.system_prompt, bot_id, normalize_org_id(body.org_id), body.org_id, nu),
                 )
+            
             cur.execute(
-                "select behavior, system_prompt, website_url, role, tone, welcome_message from chatbots where id=%s and org_id::text in (%s,%s,%s)",
+                "select behavior, system_prompt, website_url, role, tone, welcome_message, services, form_config from chatbots where id=%s and org_id::text in (%s,%s,%s)",
                 (bot_id, normalize_org_id(body.org_id), body.org_id, nu),
             )
             row = cur.fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail="Bot not found")
-            return {"behavior": row[0], "system_prompt": row[1], "website_url": row[2], "role": row[3], "tone": row[4], "welcome_message": row[5]}
+            
+            fc = row[7]
+            if isinstance(fc, str):
+                try:
+                    fc = json.loads(fc)
+                except Exception:
+                    fc = {}
+            
+            return {"behavior": row[0], "system_prompt": row[1], "website_url": row[2], "role": row[3], "tone": row[4], "welcome_message": row[5], "services": row[6], "form_config": fc}
     finally:
         conn.close()
 
@@ -2182,17 +3020,24 @@ def get_bot_config(bot_id: str, org_id: str, authorization: Optional[str] = Head
     _require_auth(authorization, org_id)
     conn = get_conn()
     try:
+        _ensure_form_config_column(conn)
         with conn.cursor() as cur:
             import uuid
             nu = str(uuid.uuid5(uuid.NAMESPACE_URL, org_id))
             cur.execute(
-                "select behavior, system_prompt, website_url, role, tone, welcome_message from chatbots where id=%s and org_id::text in (%s,%s,%s)",
+                "select behavior, system_prompt, website_url, role, tone, welcome_message, services, form_config from chatbots where id=%s and org_id::text in (%s,%s,%s)",
                 (bot_id, normalize_org_id(org_id), org_id, nu),
             )
             row = cur.fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail="Bot not found")
-            return {"behavior": row[0], "system_prompt": row[1], "website_url": row[2], "role": row[3], "tone": row[4], "welcome_message": row[5]}
+            fc = row[7]
+            if isinstance(fc, str):
+                try:
+                    fc = json.loads(fc)
+                except Exception:
+                    fc = {}
+            return {"behavior": row[0], "system_prompt": row[1], "website_url": row[2], "role": row[3], "tone": row[4], "welcome_message": row[5], "services": row[6], "form_config": fc}
     finally:
         conn.close()
 
@@ -4395,9 +5240,9 @@ def widget_js():
         "     body.scrollTop = body.scrollHeight;\n"
         "     return b;\n"
         "  }\n"
-        "  function openPopup(u){ body.style.display='none'; var inpDiv=panel.querySelector('.cb-input'); if(inpDiv)inpDiv.style.display='none'; if(footer)footer.style.display='none'; panel.style.height = '550px'; var frm=document.createElement('div'); frm.className='cb-form-layer'; frm.style.flex='1'; frm.style.display='flex'; frm.style.flexDirection='column'; frm.style.background=BG; var hd=document.createElement('div'); hd.style.padding='8px 12px'; hd.style.borderBottom='1px solid '+BORDER; hd.style.display='flex'; hd.style.alignItems='center'; hd.style.gap='10px'; hd.style.background=CARD; var back=document.createElement('button'); back.innerHTML='&#8592; Back'; back.style.background='transparent'; back.style.border='none'; back.style.color=ACC; back.style.fontWeight='600'; back.style.cursor='pointer'; back.style.fontSize='13px'; var title=document.createElement('span'); title.style.fontWeight='600'; title.style.fontSize='14px'; title.textContent=(u.indexOf('reschedule')>-1?'Reschedule':'Booking'); hd.appendChild(back); hd.appendChild(title); frm.appendChild(hd); var fr=document.createElement('iframe'); fr.src=u; fr.style.flex='1'; fr.style.border='none'; frm.appendChild(fr); panel.insertBefore(frm, footer); function closeForm(){ frm.remove(); body.style.display='flex'; if(inpDiv)inpDiv.style.display='flex'; if(footer)footer.style.display='block'; panel.style.height = ''; window._cbCloseForm=null; } back.onclick=closeForm; window._cbCloseForm=closeForm; }\n"
+        "  function openPopup(u){ body.style.display='none'; var inpDiv=panel.querySelector('.cb-input'); if(inpDiv)inpDiv.style.display='none'; if(footer)footer.style.display='none'; panel.style.height = '550px'; var frm=document.createElement('div'); frm.className='cb-form-layer'; frm.style.flex='1'; frm.style.display='flex'; frm.style.flexDirection='column'; frm.style.background=BG; var hd=document.createElement('div'); hd.style.padding='8px 12px'; hd.style.borderBottom='1px solid '+BORDER; hd.style.display='flex'; hd.style.alignItems='center'; hd.style.gap='10px'; hd.style.background=CARD; var back=document.createElement('button'); back.innerHTML='&#8592; Back'; back.style.background='transparent'; back.style.border='none'; back.style.color=ACC; back.style.fontWeight='600'; back.style.cursor='pointer'; back.style.fontSize='13px'; var title=document.createElement('span'); title.style.fontWeight='600'; title.style.fontSize='14px'; title.textContent=(u.indexOf('reschedule')>-1?'Reschedule':'Booking'); hd.appendChild(back); hd.appendChild(title); frm.appendChild(hd); var fr=document.createElement('iframe'); fr.src=u+(u.indexOf('?')>-1?'&':'?')+'session_id='+encodeURIComponent(SESSION_ID); fr.style.flex='1'; fr.style.border='none'; frm.appendChild(fr); panel.insertBefore(frm, footer); function closeForm(){ frm.remove(); body.style.display='flex'; if(inpDiv)inpDiv.style.display='flex'; if(footer)footer.style.display='block'; panel.style.height = ''; window._cbCloseForm=null; } back.onclick=closeForm; window._cbCloseForm=closeForm; }\n"
         "  body.addEventListener('click', function(e){ var a=e.target.closest('a'); if(!a) return; var href=a.getAttribute('href')||''; if(href.indexOf('/api/form/')>-1 || href.indexOf('/api/reschedule/')>-1){ e.preventDefault(); openPopup(href); } });\n"
-        "  window.addEventListener('message', function(e){ var d=e.data; if(d && (d.type==='appointment-booked'||d.type==='BOOKING_SUCCESS'||d.type==='RESCHEDULE_SUCCESS'||d.type==='RESCHEDULE_BLOCKED')){ if(d.message){ addMsg('bot', d.message); }else if(d.type==='RESCHEDULE_SUCCESS'){ addMsg('bot', 'Rescheduled your appointment to '+(d.start||'')+' - '+(d.end||'')+'. ID: '+(d.id||'')); }else{ addMsg('bot', 'Booked your appointment for '+(d.start||'')+' to '+(d.end||'')+'. ID: '+d.id); } if(window._cbCloseForm){ window._cbCloseForm(); } try{ var ov=document.querySelector('.cb-popup'); if(ov){ ov.remove(); } }catch(__){} } });\n"
+        "  window.addEventListener('message', function(e){ var d=e.data; if(d && (d.type==='appointment-booked'||d.type==='BOOKING_SUCCESS'||d.type==='RESCHEDULE_SUCCESS'||d.type==='RESCHEDULE_BLOCKED'||d.type==='LEAD_SUBMITTED')){ if(d.message){ addMsg('bot', d.message); }else if(d.type==='RESCHEDULE_SUCCESS'){ addMsg('bot', 'Rescheduled your appointment to '+(d.start||'')+' - '+(d.end||'')+'. ID: '+(d.id||'')); }else if(d.type==='LEAD_SUBMITTED'){ addMsg('bot', 'Thanks! Your enquiry has been submitted. Reference ID: '+(d.id||'')); }else{ addMsg('bot', 'Booked your appointment for '+(d.start||'')+' to '+(d.end||'')+'. ID: '+d.id); } if(window._cbCloseForm){ window._cbCloseForm(); } try{ var ov=document.querySelector('.cb-popup'); if(ov){ ov.remove(); } }catch(__){} } });\n"
         "  function setBadge(on){\n"
         "    if(!SHOW_BADGE) return;\n"
         "    badge.style.display = on ? 'inline-flex' : 'none';\n"
