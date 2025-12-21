@@ -185,6 +185,29 @@ def _init_schema():
                     )
                     """
                 )
+                cur.execute(
+                    """
+                    create table if not exists leads (
+                      id bigserial primary key,
+                      org_id text not null,
+                      bot_id text not null,
+                      name text,
+                      email text,
+                      phone text,
+                      interest_details text,
+                      comments text,
+                      conversation_summary text,
+                      interest_score int default 0,
+                      status text default 'new',
+                      created_at timestamptz default now(),
+                      updated_at timestamptz default now()
+                    )
+                    """
+                )
+                try:
+                    cur.execute("alter table leads enable row level security;")
+                except Exception:
+                    pass
                 try:
                     cur.execute("alter table bot_usage_daily enable row level security;")
                     cur.execute("alter table bot_usage_daily force row level security;")
@@ -213,6 +236,185 @@ def _init_schema():
                 try:
                     cur.execute("alter table bot_appointments enable row level security;")
                     cur.execute("alter table bot_appointments force row level security;")
+                except Exception:
+                    pass
+                
+                # Create RLS Policies
+                try:
+                    cur.execute("""
+                        create policy "Users can see their own data" on app_users
+                        for select using (auth.uid()::text = id);
+                    """)
+                except Exception:
+                    pass
+
+                try:
+                    cur.execute("""
+                        create policy "Users can see org booking resources" on booking_resources
+                        for all using (
+                            exists (
+                                select 1 from app_users
+                                where app_users.id = auth.uid()::text
+                                and app_users.org_id = booking_resources.org_id
+                            )
+                        );
+                    """)
+                except Exception:
+                    pass
+
+                try:
+                    cur.execute("""
+                        create policy "Users can see org bookings" on bookings
+                        for all using (
+                            exists (
+                                select 1 from app_users
+                                where app_users.id = auth.uid()::text
+                                and app_users.org_id = bookings.org_id
+                            )
+                        );
+                    """)
+                except Exception:
+                    pass
+
+                try:
+                    cur.execute("""
+                        create policy "Users can see org appointments" on bot_appointments
+                        for all using (
+                            exists (
+                                select 1 from app_users
+                                where app_users.id = auth.uid()::text
+                                and app_users.org_id = bot_appointments.org_id
+                            )
+                        );
+                    """)
+                except Exception:
+                    pass
+
+                try:
+                    cur.execute("""
+                        create policy "Users can see org leads" on leads
+                        for all using (
+                            exists (
+                                select 1 from app_users
+                                where app_users.id = auth.uid()::text
+                                and app_users.org_id = leads.org_id
+                            )
+                        );
+                    """)
+                except Exception:
+                    pass
+
+                try:
+                    cur.execute("""
+                        create policy "Users can see org bot booking settings" on bot_booking_settings
+                        for all using (
+                            exists (
+                                select 1 from app_users
+                                where app_users.id = auth.uid()::text
+                                and app_users.org_id = bot_booking_settings.org_id
+                            )
+                        );
+                    """)
+                except Exception:
+                    pass
+
+                try:
+                    cur.execute("""
+                        create policy "Users can see org bot calendar oauth" on bot_calendar_oauth
+                        for all using (
+                            exists (
+                                select 1 from app_users
+                                where app_users.id = auth.uid()::text
+                                and app_users.org_id = bot_calendar_oauth.org_id
+                            )
+                        );
+                    """)
+                except Exception:
+                    pass
+
+                try:
+                    cur.execute("""
+                        create policy "Users can see org bot calendar settings" on bot_calendar_settings
+                        for all using (
+                            exists (
+                                select 1 from app_users
+                                where app_users.id = auth.uid()::text
+                                and app_users.org_id = bot_calendar_settings.org_id
+                            )
+                        );
+                    """)
+                except Exception:
+                    pass
+
+                try:
+                    cur.execute("""
+                        create policy "Users can see org bot usage daily" on bot_usage_daily
+                        for all using (
+                            exists (
+                                select 1 from app_users
+                                where app_users.id = auth.uid()::text
+                                and app_users.org_id = bot_usage_daily.org_id
+                            )
+                        );
+                    """)
+                except Exception:
+                    pass
+
+                try:
+                    cur.execute("""
+                        create policy "Users can see org form configurations" on form_configurations
+                        for all using (
+                            exists (
+                                select 1 from app_users
+                                where app_users.id = auth.uid()::text
+                                and app_users.org_id = form_configurations.org_id
+                            )
+                        );
+                    """)
+                except Exception:
+                    pass
+
+                try:
+                    cur.execute("""
+                        create policy "Users can see org form fields" on form_fields
+                        for all using (
+                            exists (
+                                select 1 from form_configurations fc
+                                where fc.id = form_fields.form_config_id
+                                and exists (
+                                    select 1 from app_users
+                                    where app_users.id = auth.uid()::text
+                                    and app_users.org_id = fc.org_id
+                                )
+                            )
+                        );
+                    """)
+                except Exception:
+                    pass
+
+                try:
+                    cur.execute("""
+                        create policy "Users can see public form templates" on form_templates
+                        for select using (is_public = true);
+                    """)
+                except Exception:
+                    pass
+
+                try:
+                    cur.execute("""
+                        create policy "Users can see org resource schedules" on resource_schedules
+                        for all using (
+                            exists (
+                                select 1 from booking_resources br
+                                where br.id = resource_schedules.resource_id
+                                and exists (
+                                    select 1 from app_users
+                                    where app_users.id = auth.uid()::text
+                                    and app_users.org_id = br.org_id
+                                )
+                            )
+                        );
+                    """)
                 except Exception:
                     pass
                 
@@ -408,14 +610,17 @@ def _init_schema():
                             p_booking_date date,
                             p_start_time time,
                             p_end_time time
-                        ) returns boolean as $$
+                        ) returns boolean
+                        language plpgsql
+                        set search_path = ''
+                        as $$
                         declare
                             v_capacity int;
                             v_booked_count int;
                         begin
                             -- Get resource capacity
                             select capacity_per_slot into v_capacity
-                            from booking_resources
+                            from public.booking_resources
                             where id = p_resource_id and is_active = true;
                             
                             if v_capacity is null then
@@ -424,7 +629,7 @@ def _init_schema():
                             
                             -- Count existing bookings for this slot
                             select count(*) into v_booked_count
-                            from bookings
+                            from public.bookings
                             where resource_id = p_resource_id
                               and booking_date = p_booking_date
                               and start_time = p_start_time
@@ -434,7 +639,7 @@ def _init_schema():
                             -- Return true if there's capacity available
                             return v_booked_count < v_capacity;
                         end;
-                        $$ language plpgsql;
+                        $$;
                     """)
                     print("✓ Created check_resource_capacity function")
                 except Exception as e:
@@ -448,14 +653,17 @@ def _init_schema():
                             p_booking_date date,
                             p_start_time time,
                             p_end_time time
-                        ) returns boolean as $$
+                        ) returns boolean
+                        language plpgsql
+                        set search_path = ''
+                        as $$
                         declare
                             v_capacity int;
                             v_booked_count int;
                         begin
                             -- Get bot's capacity per slot setting
                             select capacity_per_slot into v_capacity
-                            from bot_booking_settings
+                            from public.bot_booking_settings
                             where bot_id = p_bot_id;
                             
                             if v_capacity is null then
@@ -464,7 +672,7 @@ def _init_schema():
                             
                             -- Count existing bookings for this slot
                             select count(*) into v_booked_count
-                            from bookings
+                            from public.bookings
                             where bot_id = p_bot_id
                               and booking_date = p_booking_date
                               and start_time = p_start_time
@@ -474,7 +682,7 @@ def _init_schema():
                             -- Return true if there's capacity available
                             return v_booked_count < v_capacity;
                         end;
-                        $$ language plpgsql;
+                        $$;
                     """)
                     print("✓ Created check_slot_capacity function")
                 except Exception as e:
@@ -486,7 +694,10 @@ def _init_schema():
                         create or replace function get_available_slots(
                             p_resource_id text,
                             p_date date
-                        ) returns table(slot_start time, slot_end time, available_capacity int) as $$
+                        ) returns table(slot_start time, slot_end time, available_capacity int)
+                        language plpgsql
+                        set search_path = ''
+                        as $$
                         declare
                             v_schedule record;
                             v_capacity int;
@@ -496,7 +707,7 @@ def _init_schema():
                         begin
                             -- Get resource capacity
                             select capacity_per_slot into v_capacity
-                            from booking_resources
+                            from public.booking_resources
                             where id = p_resource_id and is_active = true;
                             
                             if v_capacity is null then
@@ -506,7 +717,7 @@ def _init_schema():
                             -- Get schedule for the day
                             for v_schedule in
                                 select start_time, end_time, slot_duration_minutes
-                                from resource_schedules
+                                from public.resource_schedules
                                 where resource_id = p_resource_id
                                   and is_available = true
                                   and (
@@ -520,7 +731,7 @@ def _init_schema():
                                 while v_current_time + (v_slot_duration || ' minutes')::interval <= v_schedule.end_time loop
                                     -- Count bookings for this slot
                                     select count(*) into v_booked
-                                    from bookings
+                                    from public.bookings
                                     where resource_id = p_resource_id
                                       and booking_date = p_date
                                       and start_time = v_current_time
@@ -536,7 +747,7 @@ def _init_schema():
                                 end loop;
                             end loop;
                         end;
-                        $$ language plpgsql;
+                        $$;
                     """)
                     print("✓ Created get_available_slots function")
                 except Exception as e:
