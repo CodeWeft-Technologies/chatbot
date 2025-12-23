@@ -2607,11 +2607,11 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
             _ensure_booking_settings_table(conn)
             with conn.cursor() as cur:
                 cur.execute(
-                    "select calendar_id, access_token_enc, refresh_token_enc from bot_calendar_oauth where (org_id=%s or org_id::text=%s) and bot_id=%s and provider=%s",
+                    "select calendar_id, access_token_enc, refresh_token_enc, token_expiry from bot_calendar_oauth where (org_id=%s or org_id::text=%s) and bot_id=%s and provider=%s",
                     (normalize_org_id(body.org_id), body.org_id, bot_id, "google"),
                 )
                 row = cur.fetchone()
-                cal_id, at_enc, rt_enc = (row[0] if row else None), (row[1] if row else None), (row[2] if row else None)
+                cal_id, at_enc, rt_enc, tok_exp = (row[0] if row else None), (row[1] if row else None), (row[2] if row else None), (row[3] if row else None)
                 cur.execute(
                     "select timezone, slot_duration_minutes, capacity_per_slot, required_user_fields from bot_booking_settings where (org_id=%s or org_id::text=%s) and bot_id=%s",
                     (normalize_org_id(body.org_id), body.org_id, bot_id),
@@ -2620,20 +2620,21 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
             tzv = bs[0] if bs else None
             slotm = int(bs[1]) if bs and bs[1] else 30
             capacity = int(bs[2]) if bs and bs[2] else 1
-            aw = None; tzv = None; min_notice=None; max_future=None
+            aw = None; min_notice=None; max_future=None
             try:
                 cur.execute(
                     "select timezone, available_windows, min_notice_minutes, max_future_days from bot_booking_settings where (org_id=%s or org_id::text=%s) and bot_id=%s",
                     (normalize_org_id(org_id), org_id, bot_id),
                 )
                 more = cur.fetchone()
-                tzv = more[0] if more else None
+                if more:
+                    tzv = more[0] or tzv
                 import json
                 aw = None if (not more or more[1] is None) else (more[1] if isinstance(more[1], list) else json.loads(more[1]) if isinstance(more[1], str) else None)
                 min_notice = int(more[2]) if more and more[2] else None
                 max_future = int(more[3]) if more and more[3] else None
             except Exception:
-                aw = None; tzv = None; min_notice=None; max_future=None
+                aw = None; min_notice=None; max_future=None
             try:
                 rfraw = bs[3] if bs else None
                 _json = __import__("json")
@@ -2642,10 +2643,52 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
                 required_fields = []
             svc = None
             try:
-                from app.services.calendar_google import _decrypt, build_service_from_tokens, list_events_oauth, create_event_oauth
+                from app.services.calendar_google import _decrypt, _encrypt, build_service_from_tokens, list_events_oauth, create_event_oauth, refresh_access_token
+                from datetime import datetime, timedelta, timezone
+                
                 at = _decrypt(at_enc) if at_enc else None
                 rt = _decrypt(rt_enc) if rt_enc else None
-                svc = build_service_from_tokens(at, rt, None)
+                
+                # Proactive refresh if expired or expiring soon (within 5 mins)
+                now_utc = datetime.now(timezone.utc)
+                should_refresh = False
+                if not at:
+                    should_refresh = True
+                elif tok_exp:
+                    # tok_exp from DB might be offset-naive or offset-aware depending on driver
+                    # psycopg returns offset-aware if column is timestamptz
+                    if tok_exp.tzinfo is None:
+                        tok_exp = tok_exp.replace(tzinfo=timezone.utc)
+                    if now_utc > (tok_exp - timedelta(minutes=5)):
+                        should_refresh = True
+                
+                if should_refresh and rt:
+                    print(f"🔄 Token expired or missing, refreshing for bot {bot_id}")
+                    new_toks = refresh_access_token(rt)
+                    if new_toks and new_toks.get("access_token"):
+                        at = new_toks["access_token"]
+                        new_rt = new_toks.get("refresh_token")
+                        if new_rt: 
+                            rt = new_rt
+                        
+                        # Update DB
+                        try:
+                            enc_at = _encrypt(at)
+                            enc_rt = _encrypt(rt) if rt else None
+                            new_exp = new_toks.get("expiry")
+                            with conn.cursor() as cur:
+                                cur.execute(
+                                    """
+                                    update bot_calendar_oauth 
+                                    set access_token_enc=%s, refresh_token_enc=coalesce(%s, refresh_token_enc), token_expiry=%s, updated_at=now()
+                                    where org_id=%s and bot_id=%s and provider='google'
+                                    """,
+                                    (enc_at, enc_rt, new_exp, normalize_org_id(body.org_id), bot_id)
+                                )
+                        except Exception as e:
+                            print(f"⚠ Failed to update refreshed token in DB: {e}")
+                
+                svc = build_service_from_tokens(at, rt, tok_exp)
             except Exception:
                 svc = None
             if not si or not ei:
@@ -3367,7 +3410,7 @@ def google_oauth_callback(code: str, state: Optional[str] = None, redirect_uri: 
                 insert into bot_calendar_oauth (org_id, bot_id, provider, access_token_enc, refresh_token_enc, token_expiry, calendar_id)
                 values (%s,%s,%s,%s,%s,%s,%s)
                 on conflict (org_id, bot_id, provider)
-                do update set access_token_enc=excluded.access_token_enc, refresh_token_enc=excluded.refresh_token_enc, token_expiry=excluded.token_expiry, calendar_id=coalesce(bot_calendar_oauth.calendar_id, excluded.calendar_id), updated_at=now()
+                do update set access_token_enc=excluded.access_token_enc, refresh_token_enc=coalesce(excluded.refresh_token_enc, bot_calendar_oauth.refresh_token_enc), token_expiry=excluded.token_expiry, calendar_id=coalesce(bot_calendar_oauth.calendar_id, excluded.calendar_id), updated_at=now()
                 returning calendar_id
                 """,
                 (normalize_org_id(org_id), bot_id, "google", at, rt, exp, "primary"),
@@ -3498,12 +3541,20 @@ def get_booking_settings(bot_id: str, org_id: str, authorization: Optional[str] 
             return {"timezone": None, "available_windows": [], "slot_duration_minutes": 30, "capacity_per_slot": 1, "min_notice_minutes": 60, "max_future_days": 60, "suggest_strategy": "next_best", "required_user_fields": ["name","email"]}
         aw = []
         try:
-            if row[1] is None:
+            raw = row[1]
+            if raw is None:
                 aw = []
-            elif isinstance(row[1], (list, dict)):
-                aw = row[1] if isinstance(row[1], list) else []
-            else:
-                aw = json.loads(row[1])
+            elif isinstance(raw, list):
+                aw = raw
+            elif isinstance(raw, str):
+                try:
+                    aw = json.loads(raw)
+                except Exception:
+                    aw = []
+            elif isinstance(raw, dict):
+                # If it's a dict, it's not a list of windows. Treat as empty or try to wrap?
+                # Assuming empty or invalid structure.
+                aw = []
         except Exception:
             aw = []
         ruf = None
