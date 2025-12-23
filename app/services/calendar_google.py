@@ -75,7 +75,7 @@ def _decrypt(x: str) -> Optional[str]:
         return None
 
 
-def refresh_access_token(refresh_token: str) -> Optional[str]:
+def refresh_access_token(refresh_token: str) -> Optional[dict]:
     """Refresh an expired access token using the refresh token"""
     try:
         from google.auth.transport.requests import Request
@@ -96,8 +96,12 @@ def refresh_access_token(refresh_token: str) -> Optional[str]:
         # Refresh the token
         creds.refresh(Request())
         
-        # Return the new access token
-        return creds.token
+        # Return the new tokens
+        return {
+            "access_token": creds.token,
+            "refresh_token": creds.refresh_token, # Might be updated
+            "expiry": creds.expiry
+        }
     except Exception as e:
         print(f"Token refresh failed: {str(e)}")
         return None
