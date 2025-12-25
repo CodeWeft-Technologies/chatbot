@@ -191,7 +191,7 @@ def list_events_oauth(svc, calendar_id: str, time_min_iso: str, time_max_iso: st
         return []
 
 
-def create_event_oauth(svc, calendar_id: str, summary: str, start_iso: str, end_iso: str, attendees: Optional[List[str]] = None, timezone: Optional[str] = None, description: Optional[str] = None) -> Optional[str]:
+def create_event_oauth(svc, calendar_id: str, summary: str, start_iso: str, end_iso: str, attendees: Optional[List[str]] = None, timezone: Optional[str] = None, description: Optional[str] = None, event_id: Optional[str] = None) -> Optional[str]:
     try:
         print(f"🔧 create_event_oauth called with:")
         print(f"   - calendar_id: {calendar_id}")
@@ -212,13 +212,22 @@ def create_event_oauth(svc, calendar_id: str, summary: str, start_iso: str, end_
             print(f"   ⚠ No description provided")
         if attendees:
             ev["attendees"] = [{"email": a} for a in attendees]
+        if event_id:
+            ev["id"] = event_id
+            print(f"   ✓ Using provided event ID: {event_id}")
         
         last_error = None
         for attempt in range(3):
             try:
-                created = svc.events().insert(calendarId=calendar_id, body=ev).execute()
+                # Add sendUpdates='all' to send email notifications to attendees
+                created = svc.events().insert(calendarId=calendar_id, body=ev, sendUpdates='all').execute()
                 return created.get("id")
             except Exception as e:
+                # If the error is that the event already exists (409 Conflict), return the ID
+                if "409" in str(e) and "already exists" in str(e).lower() and event_id:
+                    print(f"   ✓ Event {event_id} already exists, returning ID")
+                    return event_id
+                    
                 last_error = e
                 print(f"   Attempt {attempt + 1}/3 failed: {str(e)}")
                 continue
@@ -237,7 +246,7 @@ def update_event_oauth(svc, calendar_id: str, event_id: str, patch: dict) -> boo
     try:
         for _ in range(3):
             try:
-                svc.events().patch(calendarId=calendar_id, eventId=event_id, body=patch).execute()
+                svc.events().patch(calendarId=calendar_id, eventId=event_id, body=patch, sendUpdates='all').execute()
                 return True
             except Exception:
                 continue
@@ -250,7 +259,7 @@ def delete_event_oauth(svc, calendar_id: str, event_id: str) -> bool:
     try:
         for _ in range(3):
             try:
-                svc.events().delete(calendarId=calendar_id, eventId=event_id).execute()
+                svc.events().delete(calendarId=calendar_id, eventId=event_id, sendUpdates='all').execute()
                 return True
             except Exception:
                 continue

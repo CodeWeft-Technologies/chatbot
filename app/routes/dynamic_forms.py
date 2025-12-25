@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 from app.db import get_conn
 import json
+import hashlib
 from datetime import date, time, datetime
 
 router = APIRouter()
@@ -753,6 +754,15 @@ def create_booking(booking: BookingCreate):
                 if not has_capacity:
                     raise HTTPException(status_code=409, detail="No capacity available for this time slot. Please choose another time.")
             
+            # Check for duplicate booking for the same customer
+            cur.execute("""
+                select id from bookings 
+                where bot_id = %s and customer_email = %s and booking_date = %s and start_time = %s and status = 'confirmed'
+            """, (booking.bot_id, booking.customer_email, booking.booking_date, booking.start_time))
+            if cur.fetchone():
+                print(f"⚠ Duplicate booking attempt: {booking.customer_email} at {booking.booking_date} {booking.start_time}")
+                raise HTTPException(status_code=409, detail="You already have a booking for this time slot.")
+
             # Get form config ID
             cur.execute("""
                 select id from form_configurations where bot_id = %s
@@ -927,6 +937,11 @@ def create_booking(booking: BookingCreate):
                         # Create event in Google Calendar with full details
                         attendees = [booking.customer_email] if booking.customer_email else None
                         
+                        # Generate a deterministic event ID to prevent duplicates
+                        # Google Calendar IDs must be 0-9, a-v. Hex (0-9, a-f) is safe.
+                        unique_string = f"{booking.bot_id}_{booking.customer_email}_{booking.booking_date}_{booking.start_time}"
+                        custom_event_id = hashlib.md5(unique_string.encode()).hexdigest()
+                        
                         print(f"🔄 Calling create_event_oauth...")
                         print(f"   Calendar ID: {cal_id or 'primary'}")
                         print(f"   Summary: {summary}")
@@ -934,6 +949,7 @@ def create_booking(booking: BookingCreate):
                         print(f"   End: {end_iso}")
                         print(f"   Timezone: {timezone}")
                         print(f"   Attendees: {attendees}")
+                        print(f"   Custom Event ID: {custom_event_id}")
                         print(f"   Description length: {len(event_description)} chars")
                         
                         external_event_id = create_event_oauth(
@@ -944,7 +960,8 @@ def create_booking(booking: BookingCreate):
                             end_iso, 
                             attendees,
                             timezone,  # timezone
-                            event_description  # description with all form details
+                            event_description,  # description with all form details
+                            custom_event_id  # Pass our deterministic ID
                         )
                         
                         # If failed due to expired token, try refreshing and retry once
@@ -973,7 +990,8 @@ def create_booking(booking: BookingCreate):
                                         end_iso, 
                                         attendees,
                                         timezone,
-                                        event_description
+                                        event_description,
+                                        custom_event_id  # Pass our deterministic ID on retry too
                                     )
                         
                         if external_event_id:
