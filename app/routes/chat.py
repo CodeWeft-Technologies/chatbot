@@ -3146,8 +3146,7 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
                 return StreamingResponse(gen_hi(), media_type="text/event-stream")
             def gen_fb():
                 text = "I don't have that information."
-                for part in text.split():
-                    yield f"data: {part} \n\n"
+                yield f"data: {text}\n\n"
                 yield "event: end\n\n"
                 try:
                     cconn = get_conn()
@@ -3191,14 +3190,26 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
                 messages=messages,
                 stream=True,
             )
+                buf = ""
                 for evt in resp:
                     try:
                         content = evt.choices[0].delta.content
                     except Exception:
                         content = None
                     if content:
+                        buf += content
                         full_response += content
-                        yield f"data: {content}\n\n"
+                        import re as _re
+                        while True:
+                            m = _re.search(r"[ \t\n\.,!\?;:\)\]\}]", buf)
+                            if not m:
+                                break
+                            idx = m.end()
+                            seg = buf[:idx]
+                            buf = buf[idx:]
+                            yield f"data: {seg}\n\n"
+                if buf:
+                    yield f"data: {buf}\n\n"
                 yield "event: end\n\n"
                 
                 # Save to conversation history after streaming completes
@@ -3232,8 +3243,7 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
                 if not isfinite(sim):
                     sim = 0.0
                 text = "I don't have that information."
-                for part in text.split():
-                    yield f"data: {part} \n\n"
+                yield f"data: {text}\n\n"
                 yield "event: end\n\n"
                 try:
                     cconn = get_conn()
@@ -5508,6 +5518,18 @@ def widget_js():
         "     t=t.replace(/\\n/g,'<br>');\n"
         "     return t;\n"
         "  }\n"
+        "  function normalizeWords(t){\n"
+        "    if(!t) return t;\n"
+        "    t=t.replace(/\\b([A-HJ-Z])\\s+([a-z]{2,})\\b/g,'$1$2');\n"
+        "    t=t.replace(/\\b([a-z]{3,})\\s+(ing|tion|sion|ment|less|ness|able|ible|ally|fully|ial|ional|tions|ments|ings|ware|care)\\b/g,'$1$2');\n"
+        "    t=t.replace(/\\b(multi|pre|re|con|inter|trans|sub|super|over|under|non|anti|auto|bio|cyber|data|micro|macro|hyper)\\s+([a-z]{3,})\\b/g,'$1$2');\n"
+        "    return t;\n"
+        "  }\n"
+        "  function joinToken(acc,t){\n"
+        "    var token=String(t||'');\n"
+        "    if(!acc) return token;\n"
+        "    return acc+token;\n"
+        "  }\n"
 
         "  // --- UI Elements ---\n"
         "  var btn = document.createElement('button');\n"
@@ -5613,14 +5635,19 @@ def widget_js():
         "     var payload=JSON.stringify({message:m, org_id:O, session_id:SESSION_ID});\n"
         "     fetch(A+'/api/chat/stream/'+B, {method:'POST',headers:h,body:payload})\n"
         "     .then(function(r){\n"
-        "         var rd=r.body.getReader(); var d=new TextDecoder();\n"
+        "         var rd=r.body.getReader(); var d=new TextDecoder(); var buf='';\n"
         "         function pump(){\n"
         "            rd.read().then(function(x){\n"
         "               if(x.done){ onchunk(null,true); return; }\n"
-        "               var chunk=d.decode(x.value);\n"
-        "               chunk.split('\\n\\n').forEach(function(l){\n"
-        "                  if(l.indexOf('data: ')===0) onchunk(l.replace(/^data:\\s*/,'')+'\\n', false);\n"
-        "               });\n"
+        "               buf += d.decode(x.value);\n"
+        "               var idx=buf.indexOf('\\n\\n');\n"
+        "               while(idx>-1){\n"
+        "                  var l=buf.slice(0,idx);\n"
+        "                  buf=buf.slice(idx+2);\n"
+        "                  if(l.indexOf('data: ')===0){ onchunk(l.replace(/^data:\\s*/,''), false); }\n"
+        "                  else if(l.indexOf('event: end')===0){ onchunk(null,true); }\n"
+        "                  idx=buf.indexOf('\\n\\n');\n"
+        "               }\n"
         "               pump();\n"
         "            });\n"
         "         } pump();\n"
@@ -5647,8 +5674,8 @@ def widget_js():
         "           return;\n"
         "        }\n"
         "        if(acc==='') botBub.innerHTML='';\n"
-        "        acc += token;\n"
-        "        botBub.innerHTML = md(acc);\n"
+        "        acc = joinToken(acc, token);\n"
+        "        botBub.innerHTML = md(normalizeWords(acc));\n"
         "        body.scrollTop = body.scrollHeight;\n"
         "     });\n"
         "  }\n"
