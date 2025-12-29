@@ -704,9 +704,13 @@ def get_bot_available_slots(bot_id: str, booking_date: date):
                     from bookings
                     where bot_id = %s
                       and booking_date = %s
-                      and start_time = %s
                       and status not in ('cancelled', 'rejected')
-                """, (bot_id, booking_date, slot["start_time"]), prepare=False)
+                      and (
+                        (start_time <= %s and end_time > %s) or
+                        (start_time < %s and end_time >= %s) or
+                        (start_time >= %s and end_time <= %s)
+                      )
+                """, (bot_id, booking_date, slot["start_time"], slot["start_time"], slot["end_time"], slot["end_time"], slot["start_time"], slot["end_time"]), prepare=False)
                 
                 booked_count = cur.fetchone()[0]
                 available_capacity = capacity - booked_count
