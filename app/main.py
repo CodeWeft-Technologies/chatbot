@@ -632,9 +632,12 @@ def _init_schema():
                             from public.bookings
                             where resource_id = p_resource_id
                               and booking_date = p_booking_date
-                              and start_time = p_start_time
-                              and end_time = p_end_time
-                              and status not in ('cancelled', 'rejected');
+                              and status not in ('cancelled', 'rejected')
+                              and (
+                                (start_time <= p_start_time and end_time > p_start_time) or
+                                (start_time < p_end_time and end_time >= p_end_time) or
+                                (start_time >= p_start_time and end_time <= p_end_time)
+                              );
                             
                             -- Return true if there's capacity available
                             return v_booked_count < v_capacity;
@@ -729,19 +732,25 @@ def _init_schema():
                                 v_slot_duration := coalesce(v_schedule.slot_duration_minutes, 30);
                                 
                                 while v_current_time + (v_slot_duration || ' minutes')::interval <= v_schedule.end_time loop
-                                    -- Count bookings for this slot
+                                    -- Count overlapping bookings for this slot window
                                     select count(*) into v_booked
                                     from public.bookings
                                     where resource_id = p_resource_id
                                       and booking_date = p_date
-                                      and start_time = v_current_time
-                                      and status not in ('cancelled', 'rejected');
+                                      and status not in ('cancelled', 'rejected')
+                                      and (
+                                        (start_time <= v_current_time and end_time > v_current_time) or
+                                        (start_time < (v_current_time + (v_slot_duration || ' minutes')::interval) and end_time >= (v_current_time + (v_slot_duration || ' minutes')::interval)) or
+                                        (start_time >= v_current_time and end_time <= (v_current_time + (v_slot_duration || ' minutes')::interval))
+                                      );
                                     
                                     slot_start := v_current_time;
                                     slot_end := v_current_time + (v_slot_duration || ' minutes')::interval;
                                     available_capacity := v_capacity - coalesce(v_booked, 0);
                                     
-                                    return next;
+                                    if available_capacity > 0 then
+                                        return next;
+                                    end if;
                                     
                                     v_current_time := v_current_time + (v_slot_duration || ' minutes')::interval;
                                 end loop;
