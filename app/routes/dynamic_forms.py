@@ -580,10 +580,38 @@ def get_available_slots(resource_id: str, booking_date: date):
 
 @router.get("/bots/{bot_id}/available-slots")
 def get_bot_available_slots(bot_id: str, booking_date: date):
-    """Get available time slots for a bot on a specific date (bot-level capacity check)"""
+    """Get available time slots for a bot on a specific date (bot-level capacity check).
+    
+    NOTE: This endpoint is DISABLED if the bot has active resources configured.
+    If resources are configured, use /resources/{resource_id}/available-slots instead.
+    """
     conn = get_conn()
     try:
         with conn.cursor() as cur:
+            # CHECK: If bot has resources configured, reject global slot query
+            cur.execute("""
+                SELECT COUNT(*) FROM booking_resources 
+                WHERE bot_id = %s AND is_active = true
+            """, (bot_id,))
+            has_resources = cur.fetchone()[0] > 0
+            
+            if has_resources:
+                # Get list of available resources for user convenience
+                cur.execute("""
+                    SELECT id, resource_name FROM booking_resources 
+                    WHERE bot_id = %s AND is_active = true
+                    ORDER BY resource_name
+                """, (bot_id,))
+                resources = [{"id": row[0], "name": row[1]} for row in cur.fetchall()]
+                
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "message": "This bot uses specific resources. Please select a resource first.",
+                        "available_resources": resources
+                    }
+                )
+            
             # Get bot booking settings
             cur.execute("""
                 select timezone, slot_duration_minutes, capacity_per_slot, 
@@ -736,6 +764,20 @@ def create_booking(booking: BookingCreate):
     
     try:
         with conn.cursor() as cur:
+            # CHECK: If bot has active resources, require resource-specific booking
+            cur.execute("""
+                SELECT COUNT(*) FROM booking_resources 
+                WHERE bot_id = %s AND is_active = true
+            """, (booking.bot_id,))
+            has_resources = cur.fetchone()[0] > 0
+            
+            # Reject global bookings if resources are configured
+            if not booking.resource_id and has_resources:
+                raise HTTPException(
+                    status_code=400, 
+                    detail="Resources are configured for this bot. Please select a specific resource (doctor, room, etc.) to complete your booking."
+                )
+            
             # Check capacity if resource specified
             if booking.resource_id:
                 cur.execute("""
@@ -743,14 +785,14 @@ def create_booking(booking: BookingCreate):
                 """, (booking.resource_id, booking.booking_date, booking.start_time, booking.end_time))
                 has_capacity = cur.fetchone()[0]
                 if not has_capacity:
-                    raise HTTPException(status_code=409, detail="No capacity available for this time slot")
+                    raise HTTPException(status_code=409, detail="No capacity available for this resource at this time. Please choose another time.")
                 
                 # Get resource name
                 cur.execute("select resource_name from booking_resources where id = %s", (booking.resource_id,))
                 resource_name = cur.fetchone()[0]
             else:
                 resource_name = None
-                # Check bot-level slot capacity when no resource specified
+                # Check bot-level slot capacity when no resource specified (only if NO resources)
                 cur.execute("""
                     select check_slot_capacity(%s, %s, %s, %s)
                 """, (booking.bot_id, booking.booking_date, booking.start_time, booking.end_time))
