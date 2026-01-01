@@ -562,18 +562,83 @@ def get_available_slots(resource_id: str, booking_date: date):
     conn = get_conn()
     try:
         with conn.cursor() as cur:
+            # Get bot_id and bot booking settings for this resource
+            cur.execute("""
+                select bot_id from booking_resources where id = %s
+            """, (resource_id,))
+            resource_row = cur.fetchone()
+            if not resource_row:
+                raise HTTPException(status_code=404, detail="Resource not found")
+            
+            bot_id = resource_row[0]
+            
+            # Get bot booking settings for min_notice and max_future
+            cur.execute("""
+                select timezone, min_notice_minutes, max_future_days
+                from bot_booking_settings
+                where bot_id = %s
+            """, (bot_id,))
+            
+            settings_row = cur.fetchone()
+            if settings_row:
+                timezone = settings_row[0]
+                min_notice = settings_row[1] or 60
+                max_future = settings_row[2] or 60
+            else:
+                timezone = None
+                min_notice = 60
+                max_future = 60
+            
+            # Get all slots from database function
             cur.execute("""
                 select slot_start, slot_end, available_capacity
                 from get_available_slots(%s, %s)
             """, (resource_id, booking_date))
             
+            # Filter slots based on min_notice and max_future
+            import datetime
+            import zoneinfo
+            
+            now = datetime.datetime.now(datetime.timezone.utc)
+            if min_notice:
+                earliest_allowed = now + datetime.timedelta(minutes=min_notice)
+            else:
+                earliest_allowed = now
+            
+            if max_future:
+                latest_allowed = now + datetime.timedelta(days=max_future)
+            else:
+                latest_allowed = None
+            
             slots = []
             for row in cur.fetchall():
-                slots.append({
-                    "start_time": str(row[0]),
-                    "end_time": str(row[1]),
-                    "available_capacity": row[2]
-                })
+                slot_start_time = row[0]
+                slot_end_time = row[1]
+                available_capacity = row[2]
+                
+                # Create datetime for this slot
+                slot_datetime = datetime.datetime.combine(booking_date, slot_start_time)
+                
+                # Apply timezone if configured
+                if timezone:
+                    try:
+                        tz = zoneinfo.ZoneInfo(timezone)
+                        slot_datetime = slot_datetime.replace(tzinfo=tz)
+                    except:
+                        # If timezone fails, assume UTC
+                        slot_datetime = slot_datetime.replace(tzinfo=datetime.timezone.utc)
+                else:
+                    slot_datetime = slot_datetime.replace(tzinfo=datetime.timezone.utc)
+                
+                # Check if slot meets min_notice and max_future constraints
+                if slot_datetime >= earliest_allowed:
+                    if latest_allowed is None or slot_datetime <= latest_allowed:
+                        slots.append({
+                            "start_time": str(slot_start_time),
+                            "end_time": str(slot_end_time),
+                            "available_capacity": available_capacity
+                        })
+            
             return {"date": str(booking_date), "slots": slots}
     finally:
         conn.close()

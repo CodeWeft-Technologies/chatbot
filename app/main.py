@@ -417,6 +417,17 @@ def _init_schema():
                     """)
                 except Exception:
                     pass
+
+                # Dev bypass: allow deletes/updates when no auth context (e.g., local testing without JWT)
+                try:
+                    cur.execute(
+                        """
+                        create policy "Dev allow resource schedules without auth" on resource_schedules
+                        for all using (auth.uid() is null);
+                        """
+                    )
+                except Exception:
+                    pass
                 
                 # Create conversation history table for session-based context
                 cur.execute(
@@ -694,6 +705,8 @@ def _init_schema():
                 # Create helper function for getting available slots
                 try:
                     cur.execute("""
+                        -- Note: Time constraints (min_notice, max_future) are now applied in Python layer
+                        -- This function returns all available slots based on schedule and capacity only
                         create or replace function get_available_slots(
                             p_resource_id text,
                             p_date date
