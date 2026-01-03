@@ -627,6 +627,44 @@ def _save_conversation_message(conn, session_id: str, org_id: str, bot_id: str, 
         )
 
 
+def _format_response(text: str) -> str:
+    """
+    Post-process LLM response to ensure proper markdown formatting and spacing.
+    Fixes common formatting issues like missing spaces after punctuation.
+    """
+    import re
+    
+    # Fix missing spaces after punctuation
+    text = re.sub(r'\.([A-Z])', r'. \1', text)  # Period + capital letter
+    text = re.sub(r',([A-Za-z])', r', \1', text)  # Comma + any letter
+    text = re.sub(r':([A-Za-z])', r': \1', text)  # Colon + any letter
+    text = re.sub(r'\?([A-Z])', r'? \1', text)  # Question mark + capital
+    text = re.sub(r'!([A-Z])', r'! \1', text)  # Exclamation + capital
+    text = re.sub(r'\+([A-Za-z])', r'+ \1', text)  # Plus + letter
+    
+    # Fix missing spaces after closing bold/italic markdown
+    text = re.sub(r'\*\*([A-Za-z])', r'** \1', text)  # **word
+    text = re.sub(r'([A-Za-z])\*\*([A-Za-z])', r'\1** \2', text)  # word**word
+    
+    # Fix spaces before punctuation that shouldn't be there
+    text = re.sub(r' \.', r'.', text)  # Remove space before period
+    text = re.sub(r' ,', r',', text)  # Remove space before comma
+    
+    # Add blank line before bullet points if not already there
+    text = re.sub(r'([^\n])\n([-*•] )', r'\1\n\n\2', text)
+    
+    # Add blank line before headers
+    text = re.sub(r'([^\n])\n(#{1,6} )', r'\1\n\n\2', text)
+    
+    # Add blank line after bullet point sections before regular text
+    text = re.sub(r'([-*•] [^\n]+)\n([A-Z][^-*•\n])', r'\1\n\n\2', text)
+    
+    # Ensure double newline between paragraphs (but not more than 2)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    
+    return text.strip()
+
+
 def _cleanup_old_conversations(conn):
     """Delete conversations older than 24 hours"""
     try:
@@ -2135,10 +2173,24 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
             history = _get_conversation_history(conn, body.session_id, body.org_id, bot_id, max_messages=10)
             
             try:
+                # Formatting instructions with examples
+                format_instructions = """ 
+
+CRITICAL FORMATTING RULES:
+1. ALWAYS add space after periods, commas, colons
+2. ALWAYS add blank line between topics
+3. Use bullet points for lists with blank line before
+4. Use **bold** for emphasis
+5. Never run words together
+
+GOOD: I can help with: Scheduling appointments, Exploring products, Learning more
+BAD: I can help with:Scheduling appointmentsExploring productsLearning more"""
+                
                 sysmsg = (
                     f"You are a {beh or 'helpful'} assistant. "
                     + (sys or "Answer with general knowledge when needed.")
                     + " Keep responses short and informative."
+                    + format_instructions
                 )
                 
                 # Build messages with conversation history
@@ -2151,7 +2203,7 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
                     temperature=0.5,
                     messages=messages,
                 )
-                answer = resp.choices[0].message.content
+                answer = _format_response(resp.choices[0].message.content)
                 
                 # Save to conversation history
                 if body.session_id:
@@ -2173,7 +2225,32 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
         base = f"You are a {behavior} assistant."
         if (behavior or '').strip().lower() == 'appointment':
             base += f" You handle appointment booking. IMPORTANT: You MUST NOT ask the user for personal details (Name, Phone, Email, Time) to book an appointment. Instead, simply provide this booking link: {form_url} . For rescheduling, provide this link: {res_form_url} . Only for cancellation or status checks, you MUST ask the user for their Appointment ID. Tell users to type 'cancel' followed by their ID to cancel, or 'status' followed by their ID to check status."
-        suffix = " Keep responses short and informative."
+        
+        # Formatting instructions with examples
+        format_instructions = """ 
+
+CRITICAL FORMATTING RULES - YOU MUST FOLLOW THESE:
+1. ALWAYS add a space after every period, comma, colon, and exclamation mark
+2. ALWAYS add a blank line between different topics or sections
+3. Use bullet points (with - or *) for lists, with blank line before the list
+4. Use **bold** for product names or key terms
+5. Add spaces around words - never run words together
+
+EXAMPLE OF GOOD FORMATTING:
+I can help you with:
+
+- **Scheduling appointments** using our AI system
+- **Exploring AI products** for various industries
+- **Learning about** our solutions
+
+Would you like to know more?
+
+EXAMPLE OF BAD FORMATTING (NEVER DO THIS):
+I can help you with:Scheduling appointmentsExploring AI productsLearning aboutour solutions
+
+Always format like the GOOD example, never like the BAD example."""
+        
+        suffix = " Keep responses short and informative." + format_instructions
         if (behavior or '').strip().lower() == 'appointment':
             suffix += " Do NOT ask for booking details (Name, Phone, etc). Use the provided links."
         
@@ -2200,7 +2277,7 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
                 temperature=0.2,
                 messages=messages,
             )
-            answer = resp.choices[0].message.content
+            answer = _format_response(resp.choices[0].message.content)
             
             # Save to conversation history
             if body.session_id:
@@ -3306,11 +3383,35 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
         lead_context_prompt = ""
         if has_submitted_lead:
             lead_context_prompt = " The user has already submitted their details/enquiry form. Acknowledge this if relevant, and do not ask them to fill the form again unless explicitly requested."
+        
+        # Formatting instructions with examples
+        format_instructions = """ 
+
+CRITICAL FORMATTING RULES - YOU MUST FOLLOW THESE:
+1. ALWAYS add a space after every period, comma, colon, and exclamation mark
+2. ALWAYS add a blank line between different topics or sections
+3. Use bullet points (with - or *) for lists, with blank line before the list
+4. Use **bold** for product names or key terms
+5. Add spaces around words - never run words together
+
+EXAMPLE OF GOOD FORMATTING:
+I can help you with:
+
+- **Scheduling appointments** using our AI system
+- **Exploring AI products** for various industries
+- **Learning about** our solutions
+
+Would you like to know more?
+
+EXAMPLE OF BAD FORMATTING (NEVER DO THIS):
+I can help you with:Scheduling appointmentsExploring AI productsLearning aboutour solutions
+
+Always format like the GOOD example, never like the BAD example."""
 
         system = (
-            (system_prompt + lead_context_prompt + " Keep responses short and informative.")
+            (system_prompt + lead_context_prompt + " Keep responses short and informative." + format_instructions)
             if system_prompt
-            else f"You are a {behavior} assistant. Use only the provided context. If the answer is not in context, say: \"I don't have that information.\"{lead_context_prompt} Keep responses short and informative."
+            else f"You are a {behavior} assistant. Use only the provided context. If the answer is not in context, say: \"I don't have that information.\"{lead_context_prompt} Keep responses short and informative.{format_instructions}"
         )
         user = f"Context:\n{context}\n\nQuestion:\n{body.message}"
         
@@ -3348,18 +3449,33 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
                             idx = m.end()
                             seg = buf[:idx]
                             buf = buf[idx:]
+                            # Apply basic formatting to each segment
+                            seg = _re.sub(r',([A-Za-z])', r', \1', seg)
+                            seg = _re.sub(r'\.([A-Z])', r'. \1', seg)
+                            seg = _re.sub(r':([A-Za-z])', r': \1', seg)
+                            seg = _re.sub(r'\+([A-Za-z])', r'+ \1', seg)
                             yield f"data: {seg}\n\n"
                 if buf:
+                    # Apply formatting to remaining buffer
+                    import re as _re
+                    buf = _re.sub(r',([A-Za-z])', r', \1', buf)
+                    buf = _re.sub(r'\.([A-Z])', r'. \1', buf)
+                    buf = _re.sub(r':([A-Za-z])', r': \1', buf)
+                    buf = _re.sub(r'\+([A-Za-z])', r'+ \1', buf)
                     yield f"data: {buf}\n\n"
+                
+                # Apply formatting to complete response before saving
+                formatted_response = _format_response(full_response)
+                
                 yield "event: end\n\n"
                 
                 # Save to conversation history after streaming completes
-                if body.session_id and full_response:
+                if body.session_id and formatted_response:
                     try:
                         sconn = get_conn()
                         try:
                             _save_conversation_message(sconn, body.session_id, body.org_id, bot_id, "user", body.message)
-                            _save_conversation_message(sconn, body.session_id, body.org_id, bot_id, "assistant", full_response)
+                            _save_conversation_message(sconn, body.session_id, body.org_id, bot_id, "assistant", formatted_response)
                         finally:
                             sconn.close()
                     except Exception:
