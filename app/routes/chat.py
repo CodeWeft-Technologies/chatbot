@@ -2521,8 +2521,8 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
                         yield "event: end\n\n"
                     
                     _ensure_usage_table(conn)
-                _log_chat_usage(conn, body.org_id, bot_id, intent_result.get('confidence', 0.0), False)
-                return StreamingResponse(gen_response(), media_type="text/event-stream")
+                    _log_chat_usage(conn, body.org_id, bot_id, intent_result.get('confidence', 0.0), False)
+                    return StreamingResponse(gen_response(), media_type="text/event-stream")
         
         # If message contains an explicit appointment ID, handle status/cancel/reschedule immediately
         if _is_appointment_bot:
@@ -2644,12 +2644,31 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
                         return StreamingResponse(gen_status("Use the [reschedule form](" + res_form_url + ") to reschedule your appointment."), media_type="text/event-stream")
                     
                     # Status details
+                    # Detect language for response
+                    lang = intent_result.get('language', 'en') if 'intent_result' in locals() else 'en'
+                    
                     g_event = None
                     if svc and ev_id:
                         try:
                             g_event = get_event_oauth(svc, cal_id or "primary", ev_id)
                         except Exception as e:
                             print(f"Error fetching Google Event: {e}")
+                    
+                    # Language-specific labels
+                    labels = {
+                        'en': {'booking': 'Booking', 'appointment': 'Appointment', 'name': 'Name', 'email': 'Email', 'phone': 'Phone', 'doctor': 'Doctor/Service', 'time': 'Time', 'status': 'Status'},
+                        'hi': {'booking': 'बुकिंग', 'appointment': 'अपॉइंटमेंट', 'name': 'नाम', 'email': 'ईमेल', 'phone': 'फोन', 'doctor': 'डॉक्टर/सेवा', 'time': 'समय', 'status': 'स्थिति'},
+                        'ta': {'booking': 'பதிப்பு', 'appointment': 'சந்திப்பு', 'name': 'பெயர்', 'email': 'மின்னஞ்சல்', 'phone': 'தொலைபேசி', 'doctor': 'மருத்துவர்/சேவை', 'time': 'நேரம்', 'status': 'நிலை'},
+                        'te': {'booking': 'బుకింగ్', 'appointment': 'అపాయింట్మెంట్', 'name': 'పేరు', 'email': 'ఇమెయిల్', 'phone': 'ఫోన్', 'doctor': 'డాక్టర్/సేవ', 'time': 'సమయం', 'status': 'స్థితి'},
+                        'kn': {'booking': 'ಬುಕಿಂಗ್', 'appointment': 'ಅಪಾಯಿಂಟ್ಮೆಂಟ್', 'name': 'ಹೆಸರು', 'email': 'ಇಮೇಲ್', 'phone': 'ಫೋನ್', 'doctor': 'ವೈದ್ಯ/ಸೇವೆ', 'time': 'ಸಮಯ', 'status': 'ಸ್ಥಿತಿ'},
+                        'ml': {'booking': 'ബുക്കിംഗ്', 'appointment': 'അപ്പോയിന്റ്മെന്റ്', 'name': 'പേര്', 'email': 'ഇമെയിൽ', 'phone': 'ഫോൺ', 'doctor': 'ഡോക്ടർ/സേവന', 'time': 'സമയം', 'status': 'സ്ഥിതി'},
+                        'bn': {'booking': 'বুকিং', 'appointment': 'অ্যাপয়েন্টমেন্ট', 'name': 'নাম', 'email': 'ইমেইল', 'phone': 'ফোন', 'doctor': 'ডাক্তার/সেবা', 'time': 'সময়', 'status': 'অবস্থা'},
+                        'mr': {'booking': 'बुकिंग', 'appointment': 'भेट', 'name': 'नाव', 'email': 'ईमेल', 'phone': 'फोन', 'doctor': 'डॉक्टर/सेवा', 'time': 'वेळ', 'status': 'स्थिती'},
+                        'gu': {'booking': 'બુકિંગ', 'appointment': 'મુલાકાત', 'name': 'નામ', 'email': 'ઇમેઇલ', 'phone': 'ફોન', 'doctor': 'ડોક્ટર/સેવા', 'time': 'સમય', 'status': 'સ્થિતિ'},
+                        'pa': {'booking': 'ਬੁਕਿੰਗ', 'appointment': 'ਮੁਲਾਕਾਤ', 'name': 'ਨਾਮ', 'email': 'ਈ-ਮੇਲ', 'phone': 'ਫੋਨ', 'doctor': 'ਡਾਕਟਰ/ਸੇਵਾ', 'time': 'ਸਮਾਂ', 'status': 'ਸਥਿਤੀ'},
+                    }
+                    label = labels.get(lang, labels['en'])
+                    
                     msgs = []
                     if g_event:
                         summary = g_event.get('summary', 'Appointment')
@@ -2665,7 +2684,7 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
                             time_str = f"{dt_start.strftime('%B %d, %Y at %I:%M %p')} - {dt_end.strftime('%I:%M %p')}"
                         except:
                             time_str = f"{start} to {end}"
-                        msg_text = f"**{summary}**\n\n🕒 **Time:** {time_str}\n✅ **Status:** {g_event.get('status', 'confirmed')}"
+                        msg_text = f"**{summary}**\n\n🕒 **{label['time']}:** {time_str}\n✅ **{label['status']}:** {g_event.get('status', 'confirmed')}"
                         if meet:
                             msg_text += f"\n📹 **Join Meeting:** [Google Meet]({meet})"
                         if link:
@@ -2676,15 +2695,15 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
                     else:
                         # Build detailed message for fallback
                         if row_source == 'bookings' and len(row) > 5:
-                            msg = f"**Booking #{ap_id}**\n\n"
+                            msg = f"**{label['booking']} #{ap_id}**\n\n"
                             if row[5]:
-                                msg += f"👤 **Name:** {row[5]}\n"
+                                msg += f"👤 **{label['name']}:** {row[5]}\n"
                             if row[6]:
-                                msg += f"📧 **Email:** {row[6]}\n"
+                                msg += f"📧 **{label['email']}:** {row[6]}\n"
                             if row[7]:
-                                msg += f"📱 **Phone:** {row[7]}\n"
+                                msg += f"📱 **{label['phone']}:** {row[7]}\n"
                             if row[8]:
-                                msg += f"👨‍⚕️ **Doctor/Service:** {row[8]}\n"
+                                msg += f"👨‍⚕️ **{label['doctor']}:** {row[8]}\n"
                             # Format time nicely
                             try:
                                 from datetime import datetime as _datetime
@@ -2693,21 +2712,21 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
                                 time_str = f"{dt_s.strftime('%B %d, %Y at %I:%M %p')} - {dt_e.strftime('%I:%M %p')}"
                             except:
                                 time_str = f"{cur_si} to {cur_ei}"
-                            msg += f"🕒 **Time:** {time_str}\n"
-                            msg += f"✅ **Status:** {cur_st}"
+                            msg += f"🕒 **{label['time']}:** {time_str}\n"
+                            msg += f"✅ **{label['status']}:** {cur_st}"
                             msgs.append(msg)
                         elif row_source == 'bot_appointments' and len(row) > 5 and row[5]:
-                            msg = f"**Appointment #{ap_id}**\n\n"
+                            msg = f"**{label['appointment']} #{ap_id}**\n\n"
                             try:
                                 import json
                                 attendees_info = json.loads(row[5]) if isinstance(row[5], str) else row[5]
                                 if isinstance(attendees_info, dict):
                                     if attendees_info.get('name'):
-                                        msg += f"👤 **Name:** {attendees_info['name']}\n"
+                                        msg += f"👤 **{label['name']}:** {attendees_info['name']}\n"
                                     if attendees_info.get('email'):
-                                        msg += f"📧 **Email:** {attendees_info['email']}\n"
+                                        msg += f"📧 **{label['email']}:** {attendees_info['email']}\n"
                                     if attendees_info.get('phone'):
-                                        msg += f"📱 **Phone:** {attendees_info['phone']}\n"
+                                        msg += f"📱 **{label['phone']}:** {attendees_info['phone']}\n"
                             except:
                                 pass
                             # Format time nicely
@@ -2718,8 +2737,8 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
                                 time_str = f"{dt_s.strftime('%B %d, %Y at %I:%M %p')} - {dt_e.strftime('%I:%M %p')}"
                             except:
                                 time_str = f"{cur_si} to {cur_ei}"
-                            msg += f"🕒 **Time:** {time_str}\n"
-                            msg += f"✅ **Status:** {cur_st}"
+                            msg += f"🕒 **{label['time']}:** {time_str}\n"
+                            msg += f"✅ **{label['status']}:** {cur_st}"
                             msgs.append(msg)
                         else:
                             # Format time nicely for fallback
@@ -2730,7 +2749,7 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
                                 time_str = f"{dt_s.strftime('%B %d, %Y at %I:%M %p')} - {dt_e.strftime('%I:%M %p')}"
                             except:
                                 time_str = f"{cur_si} to {cur_ei}"
-                            msgs.append(f"Appointment {ap_id}: {time_str}. Status: {cur_st}")
+                            msgs.append(f"{label['appointment']} {ap_id}: {time_str}. {label['status']}: {cur_st}")
                     status_text = "\n\n".join(msgs)
                     _ensure_usage_table(conn)
                     _log_chat_usage(conn, body.org_id, bot_id, 1.0, False)
