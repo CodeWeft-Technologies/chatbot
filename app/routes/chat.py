@@ -1753,22 +1753,32 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
                             _ensure_usage_table(conn)
                             _log_chat_usage(conn, body.org_id, bot_id, 0.0, False)
                             return {"answer": "Completed appointment cannot be cancelled.", "citations": [], "similarity": 0.0}
-                        ok = delete_event_oauth(svc, cal_id or "primary", ev_id)
-                        if not ok:
+                        
+                        # Try to delete from Google Calendar if event exists
+                        if svc and ev_id:
+                            try:
+                                delete_event_oauth(svc, cal_id or "primary", ev_id)
+                            except Exception as e:
+                                print(f"Error cancelling Google event: {e}")
+                        
+                        # Update database status to cancelled regardless of Google Calendar result
+                        try:
+                            with conn.cursor() as cur:
+                                cur.execute("select 1 from bookings where id=%s and (org_id=%s or org_id::text=%s) and bot_id=%s", (ap_id, normalize_org_id(body.org_id), body.org_id, bot_id))
+                                in_bookings = cur.fetchone()
+                                if in_bookings:
+                                    cur.execute("update bookings set status=%s, cancelled_at=now(), updated_at=now() where id=%s", ("cancelled", ap_id))
+                                else:
+                                    cur.execute("update bot_appointments set status=%s, updated_at=now() where id=%s", ("cancelled", ap_id))
+                            _log_audit(conn, body.org_id, bot_id, ap_id, "cancel", {})
+                            _ensure_usage_table(conn)
+                            _log_chat_usage(conn, body.org_id, bot_id, 1.0, False)
+                            return _reply_with_history(f"Appointment {ap_id} has been cancelled successfully.", [], 1.0)
+                        except Exception as e:
+                            print(f"Error updating database during cancel: {e}")
                             _ensure_usage_table(conn)
                             _log_chat_usage(conn, body.org_id, bot_id, 0.0, True)
                             return {"answer": "Cancel failed.", "citations": [], "similarity": 0.0}
-                        with conn.cursor() as cur:
-                            cur.execute("select 1 from bookings where id=%s and (org_id=%s or org_id::text=%s) and bot_id=%s", (ap_id, normalize_org_id(body.org_id), body.org_id, bot_id))
-                            in_bookings = cur.fetchone()
-                            if in_bookings:
-                                cur.execute("update bookings set status=%s, cancelled_at=now(), updated_at=now() where id=%s", ("cancelled", ap_id))
-                            else:
-                                cur.execute("update bot_appointments set status=%s, updated_at=now() where id=%s", ("cancelled", ap_id))
-                        _log_audit(conn, body.org_id, bot_id, ap_id, "cancel", {})
-                        _ensure_usage_table(conn)
-                        _log_chat_usage(conn, body.org_id, bot_id, 1.0, False)
-                        return _reply_with_history(f"Cancelled appointment ID: {ap_id}", [], 1.0)
                     if ("reschedule" in lowmsg) or ("re schedule" in lowmsg) or ("change" in lowmsg) or ("reshedule" in lowmsg) or ("reschudule" in lowmsg) or ("rescedule" in lowmsg) or (" to " in lowmsg):
                         si_ei = None
                         m = re.search(r"\bto\b(.+)$", msg, re.IGNORECASE)
@@ -2611,31 +2621,32 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
                             _ensure_usage_table(conn)
                             _log_chat_usage(conn, body.org_id, bot_id, 0.0, False)
                             return StreamingResponse(gen_status("Completed appointment cannot be cancelled."), media_type="text/event-stream")
-                        ok = False
-                        if svc:
+                        
+                        # Try to delete from Google Calendar if event exists
+                        if svc and ev_id:
                             try:
-                                ok = delete_event_oauth(svc, cal_id or "primary", ev_id)
+                                delete_event_oauth(svc, cal_id or "primary", ev_id)
                             except Exception as e:
                                 print(f"Error cancelling Google event: {e}")
-                        if not svc:
+                        
+                        # Update database status to cancelled regardless of Google Calendar result
+                        try:
+                            with conn.cursor() as cur:
+                                cur.execute("select 1 from bookings where id=%s and (org_id=%s or org_id::text=%s) and bot_id=%s", (ap_id, normalize_org_id(body.org_id), body.org_id, bot_id))
+                                in_bookings = cur.fetchone()
+                                if in_bookings:
+                                    cur.execute("update bookings set status=%s, cancelled_at=now(), updated_at=now() where id=%s", ("cancelled", ap_id))
+                                else:
+                                    cur.execute("update bot_appointments set status=%s, updated_at=now() where id=%s", ("cancelled", ap_id))
+                            _log_audit(conn, body.org_id, bot_id, ap_id, "cancel", {})
                             _ensure_usage_table(conn)
-                            _log_chat_usage(conn, body.org_id, bot_id, 0.0, True)
-                            return StreamingResponse(gen_status("Calendar service unavailable."), media_type="text/event-stream")
-                        if not ok:
+                            _log_chat_usage(conn, body.org_id, bot_id, 1.0, False)
+                            return StreamingResponse(gen_status(f"Appointment {ap_id} has been cancelled successfully."), media_type="text/event-stream")
+                        except Exception as e:
+                            print(f"Error updating database during cancel: {e}")
                             _ensure_usage_table(conn)
                             _log_chat_usage(conn, body.org_id, bot_id, 0.0, True)
                             return StreamingResponse(gen_status("Cancel failed."), media_type="text/event-stream")
-                        with conn.cursor() as cur:
-                            cur.execute("select 1 from bookings where id=%s and (org_id=%s or org_id::text=%s) and bot_id=%s", (ap_id, normalize_org_id(body.org_id), body.org_id, bot_id))
-                            in_bookings = cur.fetchone()
-                            if in_bookings:
-                                cur.execute("update bookings set status=%s, cancelled_at=now(), updated_at=now() where id=%s", ("cancelled", ap_id))
-                            else:
-                                cur.execute("update bot_appointments set status=%s, updated_at=now() where id=%s", ("cancelled", ap_id))
-                        _log_audit(conn, body.org_id, bot_id, ap_id, "cancel", {})
-                        _ensure_usage_table(conn)
-                        _log_chat_usage(conn, body.org_id, bot_id, 1.0, False)
-                        return StreamingResponse(gen_status(f"Cancelled appointment ID: {ap_id}"), media_type="text/event-stream")
                     
                     # Reschedule
                     if ("reschedule" in lw) or ("change" in lw):
