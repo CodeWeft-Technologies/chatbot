@@ -1580,7 +1580,7 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
                     with conn.cursor() as cur:
                         # Check bot_appointments
                         cur.execute(
-                            "select external_event_id, start_iso, end_iso, status, 'bot_appointments' as source from bot_appointments where id=%s and (org_id=%s or org_id::text=%s) and bot_id=%s",
+                            "select external_event_id, start_iso, end_iso, status, 'bot_appointments' as source, attendees_json from bot_appointments where id=%s and (org_id=%s or org_id::text=%s) and bot_id=%s",
                             (ap_id, normalize_org_id(body.org_id), body.org_id, bot_id),
                         )
                         row_bot = cur.fetchone()
@@ -1592,7 +1592,11 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
                                    (booking_date::text || 'T' || start_time::text) as start_iso,
                                    (booking_date::text || 'T' || end_time::text) as end_iso,
                                    status,
-                                   'bookings' as source
+                                   'bookings' as source,
+                                   customer_name,
+                                   customer_email,
+                                   customer_phone,
+                                   resource_name
                             from bookings 
                             where id=%s and (org_id=%s or org_id::text=%s) and bot_id=%s
                             """,
@@ -1672,7 +1676,20 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
                                      time_str = f"{dt_s.strftime('%B %d, %Y at %I:%M %p')} - {dt_e.strftime('%I:%M %p')}"
                                  except:
                                      time_str = f"{row_booking[1]} to {row_booking[2]}"
-                                 msgs.append(f"**Booking #{ap_id}**\n\n🕒 **Time:** {time_str}\n✅ **Status:** {row_booking[3]}")
+                                 
+                                 # Build detailed message with customer info
+                                 msg = f"**Booking #{ap_id}**\n\n"
+                                 if len(row_booking) > 5 and row_booking[5]:
+                                     msg += f"👤 **Name:** {row_booking[5]}\n"
+                                 if len(row_booking) > 6 and row_booking[6]:
+                                     msg += f"📧 **Email:** {row_booking[6]}\n"
+                                 if len(row_booking) > 7 and row_booking[7]:
+                                     msg += f"📱 **Phone:** {row_booking[7]}\n"
+                                 if len(row_booking) > 8 and row_booking[8]:
+                                     msg += f"👨‍⚕️ **Doctor/Service:** {row_booking[8]}\n"
+                                 msg += f"🕒 **Time:** {time_str}\n"
+                                 msg += f"✅ **Status:** {row_booking[3]}"
+                                 msgs.append(msg)
                             elif row_bot:
                                  try:
                                      dt_s = datetime.datetime.fromisoformat(row_bot[1])
@@ -1680,7 +1697,25 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
                                      time_str = f"{dt_s.strftime('%B %d, %Y at %I:%M %p')} - {dt_e.strftime('%I:%M %p')}"
                                  except:
                                      time_str = f"{row_bot[1]} to {row_bot[2]}"
-                                 msgs.append(f"**Appointment #{ap_id}**\n\n🕒 **Time:** {time_str}\n✅ **Status:** {row_bot[3]}")
+                                 
+                                 # Build message with attendee info if available
+                                 msg = f"**Appointment #{ap_id}**\n\n"
+                                 if len(row_bot) > 5 and row_bot[5]:
+                                     try:
+                                         import json
+                                         attendees_info = json.loads(row_bot[5]) if isinstance(row_bot[5], str) else row_bot[5]
+                                         if isinstance(attendees_info, dict):
+                                             if attendees_info.get('name'):
+                                                 msg += f"👤 **Name:** {attendees_info['name']}\n"
+                                             if attendees_info.get('email'):
+                                                 msg += f"📧 **Email:** {attendees_info['email']}\n"
+                                             if attendees_info.get('phone'):
+                                                 msg += f"📱 **Phone:** {attendees_info['phone']}\n"
+                                     except:
+                                         pass
+                                 msg += f"🕒 **Time:** {time_str}\n"
+                                 msg += f"✅ **Status:** {row_bot[3]}"
+                                 msgs.append(msg)
                         
                         status_text = "\n\n".join(msgs)
                         _ensure_usage_table(conn)
@@ -2505,10 +2540,11 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
                     with conn.cursor() as cur:
                         # Check both bot_appointments and bookings tables
                         cur.execute(
-                            "select external_event_id, start_iso, end_iso, status, 'bot_appointments' as source from bot_appointments where id=%s and (org_id=%s or org_id::text=%s) and bot_id=%s",
+                            "select external_event_id, start_iso, end_iso, status, 'bot_appointments' as source, attendees_json from bot_appointments where id=%s and (org_id=%s or org_id::text=%s) and bot_id=%s",
                             (ap_id, normalize_org_id(body.org_id), body.org_id, bot_id),
                         )
                         row = cur.fetchone()
+                        row_source = None
                         if not row:
                             cur.execute(
                                 """
@@ -2516,13 +2552,20 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
                                        (booking_date::text || 'T' || start_time::text) as start_iso,
                                        (booking_date::text || 'T' || end_time::text) as end_iso,
                                        status,
-                                       'bookings' as source
+                                       'bookings' as source,
+                                       customer_name,
+                                       customer_email,
+                                       customer_phone,
+                                       resource_name
                                 from bookings 
                                 where id=%s and (org_id=%s or org_id::text=%s) and bot_id=%s
                                 """,
                                 (ap_id, normalize_org_id(body.org_id), body.org_id, bot_id),
                             )
                             row = cur.fetchone()
+                            row_source = 'bookings' if row else None
+                        else:
+                            row_source = 'bot_appointments'
                     if not row:
                         _ensure_usage_table(conn)
                         _log_chat_usage(conn, body.org_id, bot_id, 0.0, True)
@@ -2619,7 +2662,39 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
                             msg_text += f"\n📝 **Description:** {desc}"
                         msgs.append(msg_text)
                     else:
-                        msgs.append(f"Appointment {ap_id}: {cur_si} to {cur_ei}. Status: {cur_st}")
+                        # Build detailed message for fallback
+                        if row_source == 'bookings' and len(row) > 5:
+                            msg = f"**Booking #{ap_id}**\n\n"
+                            if row[5]:
+                                msg += f"👤 **Name:** {row[5]}\n"
+                            if row[6]:
+                                msg += f"📧 **Email:** {row[6]}\n"
+                            if row[7]:
+                                msg += f"📱 **Phone:** {row[7]}\n"
+                            if row[8]:
+                                msg += f"👨‍⚕️ **Doctor/Service:** {row[8]}\n"
+                            msg += f"🕒 **Time:** {cur_si} to {cur_ei}\n"
+                            msg += f"✅ **Status:** {cur_st}"
+                            msgs.append(msg)
+                        elif row_source == 'bot_appointments' and len(row) > 5 and row[5]:
+                            msg = f"**Appointment #{ap_id}**\n\n"
+                            try:
+                                import json
+                                attendees_info = json.loads(row[5]) if isinstance(row[5], str) else row[5]
+                                if isinstance(attendees_info, dict):
+                                    if attendees_info.get('name'):
+                                        msg += f"👤 **Name:** {attendees_info['name']}\n"
+                                    if attendees_info.get('email'):
+                                        msg += f"📧 **Email:** {attendees_info['email']}\n"
+                                    if attendees_info.get('phone'):
+                                        msg += f"📱 **Phone:** {attendees_info['phone']}\n"
+                            except:
+                                pass
+                            msg += f"🕒 **Time:** {cur_si} to {cur_ei}\n"
+                            msg += f"✅ **Status:** {cur_st}"
+                            msgs.append(msg)
+                        else:
+                            msgs.append(f"Appointment {ap_id}: {cur_si} to {cur_ei}. Status: {cur_st}")
                     status_text = "\n\n".join(msgs)
                     _ensure_usage_table(conn)
                     _log_chat_usage(conn, body.org_id, bot_id, 1.0, False)
