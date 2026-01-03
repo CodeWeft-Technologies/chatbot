@@ -1652,8 +1652,9 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
                             
                             # Parse dates
                             try:
-                                dt_start = datetime.datetime.fromisoformat(start.replace('Z', '+00:00'))
-                                dt_end = datetime.datetime.fromisoformat(end.replace('Z', '+00:00'))
+                                from datetime import datetime as _datetime
+                                dt_start = _datetime.fromisoformat(start.replace('Z', '+00:00'))
+                                dt_end = _datetime.fromisoformat(end.replace('Z', '+00:00'))
                                 time_str = f"{dt_start.strftime('%B %d, %Y at %I:%M %p')} - {dt_end.strftime('%I:%M %p')}"
                             except:
                                 time_str = f"{start} to {end}"
@@ -1671,8 +1672,9 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
                             if row_booking:
                                  # Parse ISO
                                  try:
-                                     dt_s = datetime.datetime.fromisoformat(row_booking[1])
-                                     dt_e = datetime.datetime.fromisoformat(row_booking[2])
+                                     from datetime import datetime as _datetime
+                                     dt_s = _datetime.fromisoformat(row_booking[1])
+                                     dt_e = _datetime.fromisoformat(row_booking[2])
                                      time_str = f"{dt_s.strftime('%B %d, %Y at %I:%M %p')} - {dt_e.strftime('%I:%M %p')}"
                                  except:
                                      time_str = f"{row_booking[1]} to {row_booking[2]}"
@@ -1692,8 +1694,9 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
                                  msgs.append(msg)
                             elif row_bot:
                                  try:
-                                     dt_s = datetime.datetime.fromisoformat(row_bot[1])
-                                     dt_e = datetime.datetime.fromisoformat(row_bot[2])
+                                     from datetime import datetime as _datetime
+                                     dt_s = _datetime.fromisoformat(row_bot[1])
+                                     dt_e = _datetime.fromisoformat(row_bot[2])
                                      time_str = f"{dt_s.strftime('%B %d, %Y at %I:%M %p')} - {dt_e.strftime('%I:%M %p')}"
                                  except:
                                      time_str = f"{row_bot[1]} to {row_bot[2]}"
@@ -1797,19 +1800,28 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
                         _log_chat_usage(conn, body.org_id, bot_id, 1.0, False)
                         return _reply_with_history(f"Rescheduled ID {ap_id} to {new_si} - {new_ei}", [], 1.0)
                     
-                    # Status check - use multi-language responses
+                    # Status check - use multi-language responses with formatted time
                     lang = intent_result.get('language', 'en')
+                    # Format time nicely
+                    try:
+                        from datetime import datetime as _datetime
+                        dt_s = _datetime.fromisoformat(cur_si)
+                        dt_e = _datetime.fromisoformat(cur_ei)
+                        time_str = f"{dt_s.strftime('%B %d, %Y at %I:%M %p')} - {dt_e.strftime('%I:%M %p')}"
+                    except:
+                        time_str = f"{cur_si} to {cur_ei}"
+                    
                     status_responses = {
-                        'en': f"Appointment #{ap_id}\nTime: {cur_si} to {cur_ei}\nStatus: {cur_st}",
-                        'hi': f"अपॉइंटमेंट #{ap_id}\nसमय: {cur_si} से {cur_ei}\nस्थिति: {cur_st}",
-                        'ta': f"சந்திப்பு #{ap_id}\nநேரம்: {cur_si} முதல் {cur_ei}\nநிலை: {cur_st}",
-                        'te': f"అపాయింట్మెంట్ #{ap_id}\nసమయం: {cur_si} నుండి {cur_ei}\nస్థితి: {cur_st}",
-                        'kn': f"ಅಪಾಯಿಂಟ್ಮೆಂಟ್ #{ap_id}\nಸಮಯ: {cur_si} ರಿಂದ {cur_ei}\nಸ್ಥಿತಿ: {cur_st}",
-                        'ml': f"അപ്പോയിന്റ്മെന്റ് #{ap_id}\nസമയം: {cur_si} മുതൽ {cur_ei}\nസ്ഥിതി: {cur_st}",
-                        'bn': f"অ্যাপয়েন্টমেন্ট #{ap_id}\nসময়: {cur_si} থেকে {cur_ei}\nঅবস্থা: {cur_st}",
-                        'mr': f"भेट #{ap_id}\nवेळ: {cur_si} ते {cur_ei}\nस्थिती: {cur_st}",
-                        'gu': f"મુલાકાત #{ap_id}\nસમય: {cur_si} થી {cur_ei}\nસ્થિતિ: {cur_st}",
-                        'pa': f"ਮੁਲਾਕਾਤ #{ap_id}\nਸਮਾਂ: {cur_si} ਤੋਂ {cur_ei}\nਸਥਿਤੀ: {cur_st}",
+                        'en': f"Appointment #{ap_id}\nTime: {time_str}\nStatus: {cur_st}",
+                        'hi': f"अपॉइंटमेंट #{ap_id}\nसमय: {time_str}\nस्थिति: {cur_st}",
+                        'ta': f"சந்திப்பு #{ap_id}\nநேரம்: {time_str}\nநிலை: {cur_st}",
+                        'te': f"అపాయింట్మెంట్ #{ap_id}\nసమయం: {time_str}\nస్థితి: {cur_st}",
+                        'kn': f"ಅಪಾಯಿಂಟ್ಮೆಂಟ್ #{ap_id}\nಸಮಯ: {time_str}\nಸ್ಥಿತಿ: {cur_st}",
+                        'ml': f"അപ്പോയിന്റ്മെന്റ് #{ap_id}\nസമയം: {time_str}\nസ്ഥിതി: {cur_st}",
+                        'bn': f"অ্যাপয়েন্টমেন্ট #{ap_id}\nসময়: {time_str}\nঅবস্থা: {cur_st}",
+                        'mr': f"भेट #{ap_id}\nवेळ: {time_str}\nस्थिती: {cur_st}",
+                        'gu': f"મુલાકાત #{ap_id}\nસમય: {time_str}\nસ્થિતિ: {cur_st}",
+                        'pa': f"ਮੁਲਾਕਾਤ #{ap_id}\nਸਮਾਂ: {time_str}\nਸਥਿਤੀ: {cur_st}",
                     }
                     status_text = status_responses.get(lang, status_responses['en'])
                     _ensure_usage_table(conn)
@@ -2673,7 +2685,15 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
                                 msg += f"📱 **Phone:** {row[7]}\n"
                             if row[8]:
                                 msg += f"👨‍⚕️ **Doctor/Service:** {row[8]}\n"
-                            msg += f"🕒 **Time:** {cur_si} to {cur_ei}\n"
+                            # Format time nicely
+                            try:
+                                from datetime import datetime as _datetime
+                                dt_s = _datetime.fromisoformat(cur_si)
+                                dt_e = _datetime.fromisoformat(cur_ei)
+                                time_str = f"{dt_s.strftime('%B %d, %Y at %I:%M %p')} - {dt_e.strftime('%I:%M %p')}"
+                            except:
+                                time_str = f"{cur_si} to {cur_ei}"
+                            msg += f"🕒 **Time:** {time_str}\n"
                             msg += f"✅ **Status:** {cur_st}"
                             msgs.append(msg)
                         elif row_source == 'bot_appointments' and len(row) > 5 and row[5]:
@@ -2690,11 +2710,27 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
                                         msg += f"📱 **Phone:** {attendees_info['phone']}\n"
                             except:
                                 pass
-                            msg += f"🕒 **Time:** {cur_si} to {cur_ei}\n"
+                            # Format time nicely
+                            try:
+                                from datetime import datetime as _datetime
+                                dt_s = _datetime.fromisoformat(cur_si)
+                                dt_e = _datetime.fromisoformat(cur_ei)
+                                time_str = f"{dt_s.strftime('%B %d, %Y at %I:%M %p')} - {dt_e.strftime('%I:%M %p')}"
+                            except:
+                                time_str = f"{cur_si} to {cur_ei}"
+                            msg += f"🕒 **Time:** {time_str}\n"
                             msg += f"✅ **Status:** {cur_st}"
                             msgs.append(msg)
                         else:
-                            msgs.append(f"Appointment {ap_id}: {cur_si} to {cur_ei}. Status: {cur_st}")
+                            # Format time nicely for fallback
+                            try:
+                                from datetime import datetime as _datetime
+                                dt_s = _datetime.fromisoformat(cur_si)
+                                dt_e = _datetime.fromisoformat(cur_ei)
+                                time_str = f"{dt_s.strftime('%B %d, %Y at %I:%M %p')} - {dt_e.strftime('%I:%M %p')}"
+                            except:
+                                time_str = f"{cur_si} to {cur_ei}"
+                            msgs.append(f"Appointment {ap_id}: {time_str}. Status: {cur_st}")
                     status_text = "\n\n".join(msgs)
                     _ensure_usage_table(conn)
                     _log_chat_usage(conn, body.org_id, bot_id, 1.0, False)
