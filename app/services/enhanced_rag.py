@@ -46,6 +46,20 @@ def _get_model():
     return _model
 
 
+def unload_model():
+    """Unload embedding model to free RAM (~2GB)"""
+    global _model
+    try:
+        if _model is not None:
+            # Drop references and collect garbage
+            _model = None
+            import gc
+            gc.collect()
+    except Exception:
+        # Best-effort; continue
+        pass
+
+
 def embed_text(text: str) -> List[float]:
     """
     Generate embedding vector for text.

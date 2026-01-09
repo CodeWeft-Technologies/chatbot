@@ -32,6 +32,8 @@ except ImportError:
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse, urljoin
+import subprocess
+import sys
 
 
 class ScrapedContent:
@@ -96,8 +98,28 @@ def scrape_with_playwright(url: str, timeout: int = 30000) -> Tuple[str, str]:
     if not PLAYWRIGHT_AVAILABLE:
         raise ImportError("Playwright not available")
     
+    def _ensure_playwright_browsers():
+        """Attempt to install Playwright Chromium browsers at runtime."""
+        try:
+            # Prefer installing only chromium to reduce size/time
+            subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
+        except Exception as e:
+            # Best-effort; log and continue to fallback if launch still fails
+            logger.warning(f"Playwright browser install failed: {e}")
+
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        # Try launch, and if executable missing, install browsers then retry once
+        try:
+            browser = p.chromium.launch(headless=True)
+        except Exception as e:
+            msg = str(e)
+            if "Executable doesn't exist" in msg or "executablePath" in msg:
+                logger.warning("Playwright Chromium not found; installing browsers then retrying...")
+                _ensure_playwright_browsers()
+                browser = p.chromium.launch(headless=True)
+            else:
+                # Unknown failure; bubble up to caller so requests fallback can be used
+                raise
         try:
             context = browser.new_context(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
@@ -116,7 +138,14 @@ def scrape_with_playwright(url: str, timeout: int = 30000) -> Tuple[str, str]:
             
             return html, final_url
         finally:
-            browser.close()
+            try:
+                context.close()
+            except Exception:
+                pass
+            try:
+                browser.close()
+            except Exception:
+                pass
 
 
 def scrape_with_requests(url: str, timeout: int = 20) -> Tuple[str, str]:

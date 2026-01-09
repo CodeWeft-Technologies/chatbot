@@ -68,8 +68,8 @@ def ingest(bot_id: str, body: IngestBody, x_bot_key: Optional[str] = Header(defa
                 skipped += 1
     finally:
         # Unload embedding model to free ~2GB RAM after ingest completes
-        from app.rag import _unload_model
-        _unload_model()
+        from app.services.enhanced_rag import unload_model
+        unload_model()
     return {"inserted": inserted, "skipped_duplicates": skipped}
 
 
@@ -187,8 +187,8 @@ def ingest_url(bot_id: str, body: UrlBody, x_bot_key: Optional[str] = Header(def
                 skipped += 1
     finally:
         # Unload embedding model to free ~2GB RAM after ingest completes
-        from app.rag import _unload_model
-        _unload_model()
+        from app.services.enhanced_rag import unload_model
+        unload_model()
     
     return {
         "inserted": inserted,
@@ -253,8 +253,8 @@ async def ingest_pdf(
                 skipped += 1
     finally:
         # Unload embedding model to free ~2GB RAM after ingest completes
-        from app.rag import _unload_model
-        _unload_model()
+        from app.services.enhanced_rag import unload_model
+        unload_model()
     
     return {"inserted": inserted, "skipped_duplicates": skipped}
 
