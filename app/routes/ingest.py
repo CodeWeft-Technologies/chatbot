@@ -58,13 +58,18 @@ def ingest(bot_id: str, body: IngestBody, x_bot_key: Optional[str] = Header(defa
     chunks: List[str] = chunk_text(body.content)
     inserted = 0
     skipped = 0
-    for c in chunks:
-        emb = embed_text(c)
-        stored = store_embedding(body.org_id, bot_id, c, emb, metadata=None)
-        if stored:
-            inserted += 1
-        else:
-            skipped += 1
+    try:
+        for c in chunks:
+            emb = embed_text(c)
+            stored = store_embedding(body.org_id, bot_id, c, emb, metadata=None)
+            if stored:
+                inserted += 1
+            else:
+                skipped += 1
+    finally:
+        # Unload embedding model to free ~2GB RAM after ingest completes
+        from app.rag import _unload_model
+        _unload_model()
     return {"inserted": inserted, "skipped_duplicates": skipped}
 
 
@@ -157,28 +162,33 @@ def ingest_url(bot_id: str, body: UrlBody, x_bot_key: Optional[str] = Header(def
     inserted = 0
     skipped = 0
     
-    for c in chunks:
-        emb = embed_text(c)
-        
-        # Build metadata
-        meta = {
-            "source_url": scraped.final_url,
-        }
-        if scraped.title:
-            meta["page_title"] = scraped.title
-        if scraped.description:
-            meta["description"] = scraped.description
-        if scraped.canonical_url:
-            meta["canonical_url"] = scraped.canonical_url
-        if scraped.language:
-            meta["language"] = scraped.language
-        
-        # Store with automatic deduplication
-        stored = store_embedding(body.org_id, bot_id, c, emb, metadata=meta)
-        if stored:
-            inserted += 1
-        else:
-            skipped += 1
+    try:
+        for c in chunks:
+            emb = embed_text(c)
+            
+            # Build metadata
+            meta = {
+                "source_url": scraped.final_url,
+            }
+            if scraped.title:
+                meta["page_title"] = scraped.title
+            if scraped.description:
+                meta["description"] = scraped.description
+            if scraped.canonical_url:
+                meta["canonical_url"] = scraped.canonical_url
+            if scraped.language:
+                meta["language"] = scraped.language
+            
+            # Store with automatic deduplication
+            stored = store_embedding(body.org_id, bot_id, c, emb, metadata=meta)
+            if stored:
+                inserted += 1
+            else:
+                skipped += 1
+    finally:
+        # Unload embedding model to free ~2GB RAM after ingest completes
+        from app.rag import _unload_model
+        _unload_model()
     
     return {
         "inserted": inserted,
@@ -232,13 +242,20 @@ async def ingest_pdf(
     chunks: List[str] = chunk_text(text)
     inserted = 0
     skipped = 0
-    for c in chunks:
-        emb = embed_text(c)
-        stored = store_embedding(org_id, bot_id, c, emb, metadata={"source_file": file.filename})
-        if stored:
-            inserted += 1
-        else:
-            skipped += 1
+    
+    try:
+        for c in chunks:
+            emb = embed_text(c)
+            stored = store_embedding(org_id, bot_id, c, emb, metadata={"source_file": file.filename})
+            if stored:
+                inserted += 1
+            else:
+                skipped += 1
+    finally:
+        # Unload embedding model to free ~2GB RAM after ingest completes
+        from app.rag import _unload_model
+        _unload_model()
+    
     return {"inserted": inserted, "skipped_duplicates": skipped}
 
 @router.options("/ingest/pdf/{bot_id}")

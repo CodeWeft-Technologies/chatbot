@@ -1414,8 +1414,7 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
             m_id_global = re.search(r"\b(?:appointment|id)\s*[:#]?\s*(\d+)\b", msg, re.IGNORECASE)
             has_id_global = bool(m_id_global)
 
-            with open("debug_flow.log", "a") as f:
-                f.write(f"MSG: {msg}, has_id_global: {has_id_global}\n")
+            # Debug removed for performance
 
             # Handle different intents with user-friendly responses
             # Only show prompts if NO ID is provided (let ID management handle it otherwise)
@@ -1605,8 +1604,7 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
             except Exception:
                 ap_id = None
             
-            with open("debug_flow.log", "a") as f:
-                f.write(f"ap_id: {ap_id}\n")
+            # Debug removed for performance
 
             if ap_id:
                 lowmsg = msg.lower()

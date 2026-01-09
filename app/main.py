@@ -1,6 +1,11 @@
 import sys
 import asyncio
 from fastapi import FastAPI
+import logging
+
+# Reduce logging verbosity to reduce I/O load
+logging.basicConfig(level=logging.WARNING)
+logger = logging.getLogger(__name__)
 
 # On Windows, ensure the ProactorEventLoop is used so asyncio.create_subprocess_exec
 # (required by Playwright) is available. Do this early, before any asyncio usage.
@@ -49,6 +54,55 @@ app.add_middleware(
 app.include_router(chat_router, prefix="/api")
 app.include_router(ingest_router, prefix="/api")
 app.include_router(forms_router, prefix="/api")
+
+
+# Health check endpoint for Railway keep-alive
+@app.get("/health")
+def health_check():
+    """Health check endpoint for Railway to keep container warm"""
+    return {"status": "ok", "service": "chatbot-api"}
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Create vector search indexes at startup"""
+    logger.info("[STARTUP] Starting up chatbot service...")
+    
+    # Create vector search indexes for performance
+    try:
+        _init_vector_indexes()
+    except Exception as e:
+        logger.warning(f"[STARTUP] Failed to create vector indexes: {e}")
+    
+    logger.info("[STARTUP] Startup complete")
+
+
+def _init_vector_indexes():
+    """Create efficient indexes on rag_embeddings for faster queries"""
+    try:
+        with psycopg.connect(settings.SUPABASE_DB_DSN, autocommit=True) as conn:
+            with conn.cursor() as cur:
+                # Note: Cannot index large vector columns directly
+                # pgvector similarity search is fast enough without indexes
+                # Vector search uses sequential scan which is optimized for similarity operations
+                
+                # Create composite index on org_id + bot_id for faster lookups
+                try:
+                    cur.execute("""
+                        CREATE INDEX IF NOT EXISTS idx_rag_embeddings_org_bot 
+                        ON rag_embeddings (org_id, bot_id)
+                    """)
+                except Exception:
+                    pass
+                
+                # Analyze for query optimization
+                try:
+                    cur.execute("ANALYZE rag_embeddings")
+                except Exception:
+                    pass
+    except Exception:
+        pass  # Index creation is optional
+
 
 def _init_schema():
     try:
@@ -640,9 +694,9 @@ def _init_schema():
                         ALTER TABLE bookings 
                         ADD COLUMN IF NOT EXISTS external_event_id text
                     """)
-                    print("✓ Added external_event_id column to bookings table")
+                    pass
                 except Exception as e:
-                    print(f"Note: {str(e)}")
+                    pass
                 
                 # Form templates
                 cur.execute(
@@ -714,9 +768,9 @@ def _init_schema():
                         end;
                         $$;
                     """)
-                    print("✓ Created check_resource_capacity function")
+                    pass
                 except Exception as e:
-                    print(f"Note: check_resource_capacity function: {str(e)}")
+                    pass
                 
                 # Create helper function for slot capacity checking (bot-level)
                 try:
@@ -757,9 +811,9 @@ def _init_schema():
                         end;
                         $$;
                     """)
-                    print("✓ Created check_slot_capacity function")
+                    pass
                 except Exception as e:
-                    print(f"Note: check_slot_capacity function: {str(e)}")
+                    pass
                 
                 # Create helper function for getting available slots
                 try:
@@ -830,9 +884,9 @@ def _init_schema():
                         end;
                         $$;
                     """)
-                    print("✓ Created get_available_slots function")
+                    pass
                 except Exception as e:
-                    print(f"Note: get_available_slots function: {str(e)}")
+                    pass
                 
                 # Enable RLS on dynamic forms tables
                 try:

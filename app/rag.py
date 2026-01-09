@@ -2,6 +2,7 @@ from typing import List, Tuple, Optional
 from datetime import datetime
 import psycopg
 from psycopg.types.json import Json
+import gc
 
 from app.config import settings
 from app.db import get_conn, vector_search, normalize_org_id, normalize_bot_id
@@ -19,6 +20,14 @@ def _get_model():
     if _model is None and SentenceTransformer is not None:
         _model = SentenceTransformer(settings.EMBEDDING_MODEL_NAME)
     return _model
+
+
+def _unload_model():
+    """Free embedding model from memory to save RAM (~2GB)"""
+    global _model
+    if _model is not None:
+        _model = None
+        gc.collect()  # Force garbage collection
 
 
 def embed_text(text: str) -> List[float]:
