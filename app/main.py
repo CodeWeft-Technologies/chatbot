@@ -13,6 +13,24 @@ if sys.platform == "win32":
 import psycopg
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
+
+
+def ensure_auth_schema(conn):
+    """Create a minimal auth schema/uid shim for non-Supabase Postgres so RLS policies compile."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("CREATE SCHEMA IF NOT EXISTS auth;")
+            cur.execute(
+                """
+                CREATE OR REPLACE FUNCTION auth.uid()
+                RETURNS uuid
+                LANGUAGE sql
+                STABLE
+                AS $$ SELECT null::uuid $$;
+                """
+            )
+    except Exception:
+        pass
 from app.routes.chat import router as chat_router
 from app.routes.ingest import router as ingest_router
 from app.routes.dynamic_forms import router as forms_router
@@ -35,6 +53,7 @@ app.include_router(forms_router, prefix="/api")
 def _init_schema():
     try:
         with psycopg.connect(settings.SUPABASE_DB_DSN, autocommit=True) as conn:
+            ensure_auth_schema(conn)
             with conn.cursor() as cur:
                 cur.execute("create extension if not exists vector;")
                 try:
@@ -239,193 +258,233 @@ def _init_schema():
                 except Exception:
                     pass
                 
-                # Create RLS Policies
+                # Create RLS Policies (wrapped in DO blocks to avoid "already exists" errors)
                 try:
                     cur.execute("""
-                        create policy "Users can see their own data" on app_users
-                        for select using (auth.uid()::text = id);
+                        DO $$ BEGIN
+                            CREATE POLICY "Users can see their own data" ON app_users
+                            FOR SELECT USING (auth.uid()::text = id);
+                        EXCEPTION WHEN duplicate_object THEN NULL;
+                        END $$;
                     """)
                 except Exception:
                     pass
 
                 try:
                     cur.execute("""
-                        create policy "Users can see org booking resources" on booking_resources
-                        for all using (
-                            exists (
-                                select 1 from app_users
-                                where app_users.id = auth.uid()::text
-                                and app_users.org_id = booking_resources.org_id
-                            )
-                        );
-                    """)
-                except Exception:
-                    pass
-
-                try:
-                    cur.execute("""
-                        create policy "Users can see org bookings" on bookings
-                        for all using (
-                            exists (
-                                select 1 from app_users
-                                where app_users.id = auth.uid()::text
-                                and app_users.org_id = bookings.org_id
-                            )
-                        );
-                    """)
-                except Exception:
-                    pass
-
-                try:
-                    cur.execute("""
-                        create policy "Users can see org appointments" on bot_appointments
-                        for all using (
-                            exists (
-                                select 1 from app_users
-                                where app_users.id = auth.uid()::text
-                                and app_users.org_id = bot_appointments.org_id
-                            )
-                        );
-                    """)
-                except Exception:
-                    pass
-
-                try:
-                    cur.execute("""
-                        create policy "Users can see org leads" on leads
-                        for all using (
-                            exists (
-                                select 1 from app_users
-                                where app_users.id = auth.uid()::text
-                                and app_users.org_id = leads.org_id
-                            )
-                        );
-                    """)
-                except Exception:
-                    pass
-
-                try:
-                    cur.execute("""
-                        create policy "Users can see org bot booking settings" on bot_booking_settings
-                        for all using (
-                            exists (
-                                select 1 from app_users
-                                where app_users.id = auth.uid()::text
-                                and app_users.org_id = bot_booking_settings.org_id
-                            )
-                        );
-                    """)
-                except Exception:
-                    pass
-
-                try:
-                    cur.execute("""
-                        create policy "Users can see org bot calendar oauth" on bot_calendar_oauth
-                        for all using (
-                            exists (
-                                select 1 from app_users
-                                where app_users.id = auth.uid()::text
-                                and app_users.org_id = bot_calendar_oauth.org_id
-                            )
-                        );
-                    """)
-                except Exception:
-                    pass
-
-                try:
-                    cur.execute("""
-                        create policy "Users can see org bot calendar settings" on bot_calendar_settings
-                        for all using (
-                            exists (
-                                select 1 from app_users
-                                where app_users.id = auth.uid()::text
-                                and app_users.org_id = bot_calendar_settings.org_id
-                            )
-                        );
-                    """)
-                except Exception:
-                    pass
-
-                try:
-                    cur.execute("""
-                        create policy "Users can see org bot usage daily" on bot_usage_daily
-                        for all using (
-                            exists (
-                                select 1 from app_users
-                                where app_users.id = auth.uid()::text
-                                and app_users.org_id = bot_usage_daily.org_id
-                            )
-                        );
-                    """)
-                except Exception:
-                    pass
-
-                try:
-                    cur.execute("""
-                        create policy "Users can see org form configurations" on form_configurations
-                        for all using (
-                            exists (
-                                select 1 from app_users
-                                where app_users.id = auth.uid()::text
-                                and app_users.org_id = form_configurations.org_id
-                            )
-                        );
-                    """)
-                except Exception:
-                    pass
-
-                try:
-                    cur.execute("""
-                        create policy "Users can see org form fields" on form_fields
-                        for all using (
-                            exists (
-                                select 1 from form_configurations fc
-                                where fc.id = form_fields.form_config_id
-                                and exists (
-                                    select 1 from app_users
-                                    where app_users.id = auth.uid()::text
-                                    and app_users.org_id = fc.org_id
+                        DO $$ BEGIN
+                            CREATE POLICY "Users can see org booking resources" ON booking_resources
+                            FOR ALL USING (
+                                EXISTS (
+                                    SELECT 1 FROM app_users
+                                    WHERE app_users.id = auth.uid()::text
+                                    AND app_users.org_id = booking_resources.org_id
                                 )
-                            )
-                        );
+                            );
+                        EXCEPTION WHEN duplicate_object THEN NULL;
+                        END $$;
                     """)
                 except Exception:
                     pass
 
                 try:
                     cur.execute("""
-                        create policy "Users can see public form templates" on form_templates
-                        for select using (is_public = true);
-                    """)
-                except Exception:
-                    pass
-
-                try:
-                    cur.execute("""
-                        create policy "Users can see org resource schedules" on resource_schedules
-                        for all using (
-                            exists (
-                                select 1 from booking_resources br
-                                where br.id = resource_schedules.resource_id
-                                and exists (
-                                    select 1 from app_users
-                                    where app_users.id = auth.uid()::text
-                                    and app_users.org_id = br.org_id
+                        DO $$ BEGIN
+                            CREATE POLICY "Users can see org bookings" ON bookings
+                            FOR ALL USING (
+                                EXISTS (
+                                    SELECT 1 FROM app_users
+                                    WHERE app_users.id = auth.uid()::text
+                                    AND app_users.org_id = bookings.org_id
                                 )
-                            )
-                        );
+                            );
+                        EXCEPTION WHEN duplicate_object THEN NULL;
+                        END $$;
+                    """)
+                except Exception:
+                    pass
+
+                try:
+                    cur.execute("""
+                        DO $$ BEGIN
+                            CREATE POLICY "Users can see org appointments" ON bot_appointments
+                            FOR ALL USING (
+                                EXISTS (
+                                    SELECT 1 FROM app_users
+                                    WHERE app_users.id = auth.uid()::text
+                                    AND app_users.org_id = bot_appointments.org_id
+                                )
+                            );
+                        EXCEPTION WHEN duplicate_object THEN NULL;
+                        END $$;
+                    """)
+                except Exception:
+                    pass
+
+                try:
+                    cur.execute("""
+                        DO $$ BEGIN
+                            CREATE POLICY "Users can see org leads" ON leads
+                            FOR ALL USING (
+                                EXISTS (
+                                    SELECT 1 FROM app_users
+                                    WHERE app_users.id = auth.uid()::text
+                                    AND app_users.org_id = leads.org_id
+                                )
+                            );
+                        EXCEPTION WHEN duplicate_object THEN NULL;
+                        END $$;
+                    """)
+                except Exception:
+                    pass
+
+                try:
+                    cur.execute("""
+                        DO $$ BEGIN
+                            CREATE POLICY "Users can see org bot booking settings" ON bot_booking_settings
+                            FOR ALL USING (
+                                EXISTS (
+                                    SELECT 1 FROM app_users
+                                    WHERE app_users.id = auth.uid()::text
+                                    AND app_users.org_id = bot_booking_settings.org_id
+                                )
+                            );
+                        EXCEPTION WHEN duplicate_object THEN NULL;
+                        END $$;
+                    """)
+                except Exception:
+                    pass
+
+                try:
+                    cur.execute("""
+                        DO $$ BEGIN
+                            CREATE POLICY "Users can see org bot calendar oauth" ON bot_calendar_oauth
+                            FOR ALL USING (
+                                EXISTS (
+                                    SELECT 1 FROM app_users
+                                    WHERE app_users.id = auth.uid()::text
+                                    AND app_users.org_id = bot_calendar_oauth.org_id
+                                )
+                            );
+                        EXCEPTION WHEN duplicate_object THEN NULL;
+                        END $$;
+                    """)
+                except Exception:
+                    pass
+
+                try:
+                    cur.execute("""
+                        DO $$ BEGIN
+                            CREATE POLICY "Users can see org bot calendar settings" ON bot_calendar_settings
+                            FOR ALL USING (
+                                EXISTS (
+                                    SELECT 1 FROM app_users
+                                    WHERE app_users.id = auth.uid()::text
+                                    AND app_users.org_id = bot_calendar_settings.org_id
+                                )
+                            );
+                        EXCEPTION WHEN duplicate_object THEN NULL;
+                        END $$;
+                    """)
+                except Exception:
+                    pass
+
+                try:
+                    cur.execute("""
+                        DO $$ BEGIN
+                            CREATE POLICY "Users can see org bot usage daily" ON bot_usage_daily
+                            FOR ALL USING (
+                                EXISTS (
+                                    SELECT 1 FROM app_users
+                                    WHERE app_users.id = auth.uid()::text
+                                    AND app_users.org_id = bot_usage_daily.org_id
+                                )
+                            );
+                        EXCEPTION WHEN duplicate_object THEN NULL;
+                        END $$;
+                    """)
+                except Exception:
+                    pass
+
+                try:
+                    cur.execute("""
+                        DO $$ BEGIN
+                            CREATE POLICY "Users can see org form configurations" ON form_configurations
+                            FOR ALL USING (
+                                EXISTS (
+                                    SELECT 1 FROM app_users
+                                    WHERE app_users.id = auth.uid()::text
+                                    AND app_users.org_id = form_configurations.org_id
+                                )
+                            );
+                        EXCEPTION WHEN duplicate_object THEN NULL;
+                        END $$;
+                    """)
+                except Exception:
+                    pass
+
+                try:
+                    cur.execute("""
+                        DO $$ BEGIN
+                            CREATE POLICY "Users can see org form fields" ON form_fields
+                            FOR ALL USING (
+                                EXISTS (
+                                    SELECT 1 FROM form_configurations fc
+                                    WHERE fc.id = form_fields.form_config_id
+                                    AND EXISTS (
+                                        SELECT 1 FROM app_users
+                                        WHERE app_users.id = auth.uid()::text
+                                        AND app_users.org_id = fc.org_id
+                                    )
+                                )
+                            );
+                        EXCEPTION WHEN duplicate_object THEN NULL;
+                        END $$;
+                    """)
+                except Exception:
+                    pass
+
+                try:
+                    cur.execute("""
+                        DO $$ BEGIN
+                            CREATE POLICY "Users can see public form templates" ON form_templates
+                            FOR SELECT USING (is_public = true);
+                        EXCEPTION WHEN duplicate_object THEN NULL;
+                        END $$;
+                    """)
+                except Exception:
+                    pass
+
+                try:
+                    cur.execute("""
+                        DO $$ BEGIN
+                            CREATE POLICY "Users can see org resource schedules" ON resource_schedules
+                            FOR ALL USING (
+                                EXISTS (
+                                    SELECT 1 FROM booking_resources br
+                                    WHERE br.id = resource_schedules.resource_id
+                                    AND EXISTS (
+                                        SELECT 1 FROM app_users
+                                        WHERE app_users.id = auth.uid()::text
+                                        AND app_users.org_id = br.org_id
+                                    )
+                                )
+                            );
+                        EXCEPTION WHEN duplicate_object THEN NULL;
+                        END $$;
                     """)
                 except Exception:
                     pass
 
                 # Dev bypass: allow deletes/updates when no auth context (e.g., local testing without JWT)
                 try:
-                    cur.execute(
-                        """
-                        create policy "Dev allow resource schedules without auth" on resource_schedules
-                        for all using (auth.uid() is null);
-                        """
-                    )
+                    cur.execute("""
+                        DO $$ BEGIN
+                            CREATE POLICY "Dev allow resource schedules without auth" ON resource_schedules
+                            FOR ALL USING (auth.uid() IS NULL);
+                        EXCEPTION WHEN duplicate_object THEN NULL;
+                        END $$;
+                    """)
                 except Exception:
                     pass
                 
