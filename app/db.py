@@ -30,21 +30,16 @@ def _ensure_extensions(conn):
                 raise Exception("Vector extension not available")
             
             schema_name = vector_schema[0]
-            logger.info(f"Vector extension found in schema: {schema_name}")
             
             # Set search path to include vector schema
             if schema_name != 'public':
                 cur.execute(f'SET search_path TO public, {schema_name};')
-                logger.info(f"Search path set to: public, {schema_name}")
             else:
                 cur.execute('SET search_path TO public;')
-                logger.info("Search path set to: public")
             
             # Verify vector type is accessible
             cur.execute("SELECT typname FROM pg_type WHERE typname = 'vector'")
-            if cur.fetchone():
-                logger.info("Vector type confirmed accessible")
-            else:
+            if not cur.fetchone():
                 logger.error("Vector type not accessible after setting search path")
                 
     except Exception as e:
@@ -55,7 +50,6 @@ def _ensure_extensions(conn):
 def get_conn():
     """Get database connection with vector extension ensured."""
     dsn = settings.SUPABASE_DB_DSN
-    logger.info(f"Connecting to DB: {dsn[:80]}...")
     conn = psycopg.connect(dsn, autocommit=True)
     _ensure_extensions(conn)
     return conn

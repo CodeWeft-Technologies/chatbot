@@ -21,10 +21,11 @@ class Settings(BaseSettings):
     SUPABASE_SERVICE_ROLE_KEY: str = Field(...)
     SUPABASE_DB_DSN: str = Field(...)
     GROQ_API_KEY: str = Field(...)
+    OPENAI_API_KEY: str = Field(...)
     JWT_SECRET: str = Field("dev-secret")
     PASSWORD_PEPPER: str = Field(default="")
 
-    EMBEDDING_MODEL_NAME: str = Field("BAAI/bge-large-en-v1.5")
+    EMBEDDING_MODEL_NAME: str = Field("text-embedding-3-small")  # OpenAI model
     MAX_CONTEXT_CHUNKS: int = Field(6)
     MIN_SIMILARITY: float = Field(0.25)
 

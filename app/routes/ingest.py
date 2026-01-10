@@ -77,6 +77,7 @@ def ingest(bot_id: str, body: IngestBody, x_bot_key: Optional[str] = Header(defa
         finally:
             # Unload embedding model to free ~2GB RAM after ingest completes
             from app.services.enhanced_rag import unload_model
+            print(f"[INGEST] Inserted {inserted} chunks - calling unload_model()...", flush=True)
             unload_model()
         return {"inserted": inserted, "skipped_duplicates": skipped}
     finally:
@@ -163,6 +164,8 @@ def ingest_url(bot_id: str, body: UrlBody, x_bot_key: Optional[str] = Header(def
         from app.services.enhanced_scraper import scrape_url
         from app.services.enhanced_rag import chunk_text, embed_text, store_embedding, remove_boilerplate
         
+        print(f"[INGEST-URL] Starting URL ingest for {body.url}", flush=True)
+        
         try:
             scraped = scrape_url(body.url, use_playwright=True, timeout=30)
         except Exception as e:
@@ -176,6 +179,8 @@ def ingest_url(bot_id: str, body: UrlBody, x_bot_key: Optional[str] = Header(def
         
         inserted = 0
         skipped = 0
+        
+        print(f"[INGEST-URL] Processing {len(chunks)} chunks, will call embed_text() for each", flush=True)
         
         try:
             for c in chunks:
@@ -203,6 +208,7 @@ def ingest_url(bot_id: str, body: UrlBody, x_bot_key: Optional[str] = Header(def
         finally:
             # Unload embedding model to free ~2GB RAM after ingest completes
             from app.services.enhanced_rag import unload_model
+            print(f"[INGEST-URL] Inserted {inserted} chunks - calling unload_model()...", flush=True)
             unload_model()
         
         return {

@@ -2296,6 +2296,12 @@ Always format like the GOOD example, never like the BAD example."""
         }
     finally:
         conn.close()
+        # Only unload embedding model if it's been idle for 10+ minutes (prevents slowdown)
+        try:
+            from app.rag import _check_and_unload_if_idle
+            _check_and_unload_if_idle()
+        except Exception:
+            pass
 
 @router.post("/bots")
 def create_bot(body: CreateBotBody, authorization: Optional[str] = Header(default=None)):
@@ -2521,8 +2527,7 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
             intent_result = _hybrid_intent_detection(msg, history)
             
             # Debug logging
-            print(f"[INTENT DEBUG] Message: '{msg}'")
-            print(f"[INTENT DEBUG] Result: is_booking={intent_result.get('is_booking')}, action={intent_result.get('action')}, confidence={intent_result.get('confidence')}")
+            pass  # Intent classification completed
             
             # Set flag to determine if this is a booking query
             _is_booking_query = intent_result.get('is_booking', False)
@@ -2618,7 +2623,7 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
                 ap_id = int(m_id.group(1)) if m_id else None
             except Exception:
                 ap_id = None
-            print(f"[STREAM DEBUG] Detected ap_id (early): {ap_id}")
+            pass  # Appointment ID detected
             if ap_id:
                 base = getattr(settings, 'PUBLIC_API_BASE_URL', '') or ''
                 form_url = f"{base}/api/form/{bot_id}?org_id={body.org_id}" + (f"&bot_key={public_api_key}" if public_api_key else "")
@@ -2920,10 +2925,7 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
                     _ensure_audit_logs_table(conn)
                     
                     # Debug logging for streaming endpoint
-                    print(f"[STREAM DEBUG] Looking for appointment ID: {ap_id}")
-                    print(f"[STREAM DEBUG] org_id (raw): {body.org_id}")
-                    print(f"[STREAM DEBUG] org_id (normalized): {normalize_org_id(body.org_id)}")
-                    print(f"[STREAM DEBUG] bot_id: {bot_id}")
+                    pass  # Looking up appointment
                     
                     with conn.cursor() as cur:
                         # Check both bot_appointments and bookings tables
@@ -2936,7 +2938,7 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
                         
                         # If not found, try bookings table (form-created bookings)
                         if not row:
-                            print(f"[STREAM DEBUG] Not in bot_appointments, checking bookings table...")
+                            pass  # Checking bookings table
                             cur.execute(
                                 """
                                 select calendar_event_id, 
@@ -2951,7 +2953,7 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
                             )
                             row = cur.fetchone()
                             if row:
-                                print(f"[STREAM DEBUG] Found in bookings table!")
+                                pass  # Found in bookings
                     if not row:
                         _ensure_usage_table(conn)
                         _log_chat_usage(conn, body.org_id, bot_id, 0.0, True)
@@ -3295,11 +3297,7 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
             apid = None
             
             # Debug logging for appointment creation
-            print(f"[STREAM DEBUG] Creating appointment:")
-            print(f"[STREAM DEBUG] org_id (raw): {body.org_id}")
-            print(f"[STREAM DEBUG] org_id (normalized): {normalize_org_id(body.org_id)}")
-            print(f"[STREAM DEBUG] bot_id: {bot_id}")
-            print(f"[STREAM DEBUG] start_iso: {si}, end_iso: {ei}")
+            pass  # Creating appointment
             
             try:
                 with conn.cursor() as cur:
@@ -3309,9 +3307,9 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
                     )
                     r = cur.fetchone()
                     apid = int(r[0]) if r else None
-                    print(f"[STREAM DEBUG] Created appointment with ID: {apid}")
+                    pass  # Appointment created
             except Exception as e:
-                print(f"[STREAM DEBUG] ERROR creating appointment: {e}")
+                pass  # Appointment creation error logged
                 import traceback
                 traceback.print_exc()
                 apid = None
@@ -3513,6 +3511,12 @@ Always format like the GOOD example, never like the BAD example."""
         return StreamingResponse(gen(), media_type="text/event-stream")
     finally:
         conn.close()
+        # Only unload embedding model if it's been idle for 10+ minutes (prevents slowdown)
+        try:
+            from app.rag import _check_and_unload_if_idle
+            _check_and_unload_if_idle()
+        except Exception:
+            pass
 
 @router.get("/usage/{org_id}/{bot_id}")
 def usage(org_id: str, bot_id: str, days: int = 30, authorization: Optional[str] = Header(default=None)):

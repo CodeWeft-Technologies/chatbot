@@ -2,7 +2,7 @@ fastapi==0.115.5
 uvicorn==0.32.0
 psycopg[binary]==3.2.3
 python-dotenv==1.0.1
-sentence-transformers==3.2.1
+openai==1.109.1
 groq==0.11.0
 
 llama-index==0.13.0

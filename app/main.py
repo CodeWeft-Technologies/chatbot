@@ -68,6 +68,12 @@ async def startup_event():
     """Initialize server: install Playwright, create indexes, setup schema"""
     logger.info("[STARTUP] Starting up chatbot service...")
     
+    # Update vector dimensions if needed (OpenAI embeddings use 1536)
+    try:
+        _update_vector_dimensions()
+    except Exception as e:
+        logger.warning(f"[STARTUP] Vector dimension update failed: {e}")
+    
     # Install Playwright browsers at startup (before any requests arrive)
     try:
         _install_playwright_browsers()
@@ -81,6 +87,59 @@ async def startup_event():
         logger.warning(f"[STARTUP] Failed to create vector indexes: {e}")
     
     logger.info("[STARTUP] Startup complete")
+
+
+def _update_vector_dimensions():
+    """Update rag_embeddings table to use 1536 dimensions for OpenAI embeddings"""
+    logger.info("[STARTUP] Checking vector dimensions...")
+    try:
+        with psycopg.connect(settings.SUPABASE_DB_DSN, autocommit=True) as conn:
+            with conn.cursor() as cur:
+                # Check current vector dimensions
+                cur.execute("""
+                    SELECT 
+                        pg_catalog.format_type(a.atttypid, a.atttypmod) as data_type
+                    FROM pg_catalog.pg_attribute a
+                    WHERE a.attrelid = 'rag_embeddings'::regclass
+                    AND a.attname = 'embedding'
+                    AND a.attnum > 0 
+                    AND NOT a.attisdropped;
+                """)
+                result = cur.fetchone()
+                
+                if result and 'vector(1024)' in result[0]:
+                    logger.info("[STARTUP] Updating vector dimensions from 1024 to 1536...")
+                    
+                    # Drop and recreate table with new dimensions
+                    cur.execute("DROP TABLE IF EXISTS rag_embeddings CASCADE;")
+                    cur.execute("""
+                        CREATE TABLE rag_embeddings (
+                            id SERIAL PRIMARY KEY,
+                            org_id TEXT NOT NULL,
+                            bot_id TEXT NOT NULL,
+                            content TEXT NOT NULL,
+                            embedding EXTENSIONS.vector(1536) NOT NULL,
+                            metadata JSONB DEFAULT '{}',
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        );
+                    """)
+                    
+                    # Create indexes
+                    cur.execute("""
+                        CREATE INDEX rag_embeddings_vector_idx 
+                        ON rag_embeddings USING ivfflat (embedding)
+                        WITH (lists = 100);
+                    """)
+                    cur.execute("CREATE INDEX rag_embeddings_org_bot_idx ON rag_embeddings(org_id, bot_id);")
+                    
+                    logger.info("[STARTUP] ✅ Vector dimensions updated to 1536")
+                elif result and 'vector(1536)' in result[0]:
+                    logger.info("[STARTUP] ✅ Vector dimensions already correct (1536)")
+                else:
+                    logger.info(f"[STARTUP] Vector column info: {result}")
+    except Exception as e:
+        logger.error(f"[STARTUP] Failed to update vector dimensions: {e}")
+        raise
 
 
 def _install_playwright_browsers():

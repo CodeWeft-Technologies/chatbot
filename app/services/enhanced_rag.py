@@ -7,16 +7,12 @@ import psycopg
 from psycopg.types.json import Json
 import hashlib
 import logging
+from openai import OpenAI
 
 from app.config import settings
 from app.db import get_conn, vector_search, normalize_org_id, normalize_bot_id
 
 logger = logging.getLogger(__name__)
-
-try:
-    from sentence_transformers import SentenceTransformer
-except Exception:
-    SentenceTransformer = None
 
 try:
     import nltk
@@ -35,52 +31,43 @@ except ImportError:
     NLTK_AVAILABLE = False
     logger.warning("NLTK not available - using fallback chunking")
 
-_model = None
+# Initialize OpenAI client
+_openai_client = None
 
 
-def _get_model():
-    """Get or initialize the embedding model"""
-    global _model
-    if _model is None and SentenceTransformer is not None:
-        _model = SentenceTransformer(settings.EMBEDDING_MODEL_NAME)
-    return _model
+def _get_openai_client():
+    """Get or create OpenAI client for embeddings"""
+    global _openai_client
+    if _openai_client is None:
+        _openai_client = OpenAI(api_key=settings.OPENAI_API_KEY)
+    return _openai_client
 
 
 def unload_model():
-    """Unload embedding model to free RAM (~2GB)"""
-    global _model
-    try:
-        if _model is not None:
-            # Drop references and collect garbage
-            _model = None
-            import gc
-            gc.collect()
-    except Exception:
-        # Best-effort; continue
-        pass
+    """No-op for API-based embeddings (kept for backward compatibility)"""
+    pass
+
+
+def check_and_unload_if_idle():
+    """No-op for API-based embeddings (kept for backward compatibility)"""
+    return False
 
 
 def embed_text(text: str) -> List[float]:
     """
-    Generate embedding vector for text.
-    Falls back to hash-based mock if SentenceTransformer unavailable.
+    Generate embedding vector for text using OpenAI API.
     """
-    model = _get_model()
-    if model is None:
-        import re, math
-        dims = 1024
-        v = [0.0] * dims
-        t = (text or "").lower()
-        tokens = re.findall(r"[a-z0-9]+", t)
-        for tok in tokens:
-            h = hash(tok) % dims
-            v[h] += 1.0
-        s = math.sqrt(sum(x*x for x in v))
-        if s > 0:
-            v = [x / s for x in v]
-        return v
-    vec = model.encode([text], normalize_embeddings=True)[0]
-    return vec.tolist()
+    try:
+        client = _get_openai_client()
+        response = client.embeddings.create(
+            input=text,
+            model=settings.EMBEDDING_MODEL_NAME
+        )
+        return response.data[0].embedding
+    except Exception as e:
+        print(f"❌ [EMBEDDING] Error generating OpenAI embedding: {e}", flush=True)
+        logger.error(f"❌ Error generating OpenAI embedding: {e}")
+        raise
 
 
 def chunk_text_semantic(
