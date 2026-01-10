@@ -17,8 +17,10 @@ router = APIRouter()
 from collections import defaultdict, deque
 import time
 import base64, json, hmac, hashlib, datetime
+import threading
 
 _RATE_BUCKETS = defaultdict(deque)
+_INGEST_LOCK = threading.Semaphore(1)  # Allow only 1 concurrent ingest to prevent memory spikes
 
 
 def _rate_limit(bot_id: str, org_id: str, limit: int = 120, window_seconds: int = 60):
@@ -55,22 +57,30 @@ def ingest(bot_id: str, body: IngestBody, x_bot_key: Optional[str] = Header(defa
     finally:
         conn.close()
     _rate_limit(bot_id, body.org_id)
-    chunks: List[str] = chunk_text(body.content)
-    inserted = 0
-    skipped = 0
+    
+    # Prevent concurrent ingests to avoid memory spikes (max 1 at a time)
+    if not _INGEST_LOCK.acquire(blocking=False):
+        raise HTTPException(status_code=429, detail="Another ingest is running; please wait")
+    
     try:
-        for c in chunks:
-            emb = embed_text(c)
-            stored = store_embedding(body.org_id, bot_id, c, emb, metadata=None)
-            if stored:
-                inserted += 1
-            else:
-                skipped += 1
+        chunks: List[str] = chunk_text(body.content)
+        inserted = 0
+        skipped = 0
+        try:
+            for c in chunks:
+                emb = embed_text(c)
+                stored = store_embedding(body.org_id, bot_id, c, emb, metadata=None)
+                if stored:
+                    inserted += 1
+                else:
+                    skipped += 1
+        finally:
+            # Unload embedding model to free ~2GB RAM after ingest completes
+            from app.services.enhanced_rag import unload_model
+            unload_model()
+        return {"inserted": inserted, "skipped_duplicates": skipped}
     finally:
-        # Unload embedding model to free ~2GB RAM after ingest completes
-        from app.services.enhanced_rag import unload_model
-        unload_model()
-    return {"inserted": inserted, "skipped_duplicates": skipped}
+        _INGEST_LOCK.release()
 
 
 @router.get("/analytics/{org_id}/{bot_id}")
@@ -144,58 +154,65 @@ def ingest_url(bot_id: str, body: UrlBody, x_bot_key: Optional[str] = Header(def
     finally:
         conn.close()
 
-    # Use enhanced scraper with Playwright and Readability (enabled by default)
-    from app.services.enhanced_scraper import scrape_url
-    from app.services.enhanced_rag import chunk_text, embed_text, store_embedding, remove_boilerplate
+    # Prevent concurrent ingests to avoid memory spikes (max 1 at a time)
+    if not _INGEST_LOCK.acquire(blocking=False):
+        raise HTTPException(status_code=429, detail="Another ingest is running; please wait")
     
     try:
-        scraped = scrape_url(body.url, use_playwright=True, timeout=30)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Scraping failed: {str(e)}")
-    
-    # Remove boilerplate patterns
-    cleaned_content = remove_boilerplate(scraped.content)
-    
-    # Chunk with semantic boundaries
-    chunks: List[str] = chunk_text(cleaned_content)
-    
-    inserted = 0
-    skipped = 0
-    
-    try:
-        for c in chunks:
-            emb = embed_text(c)
-            
-            # Build metadata
-            meta = {
-                "source_url": scraped.final_url,
-            }
-            if scraped.title:
-                meta["page_title"] = scraped.title
-            if scraped.description:
-                meta["description"] = scraped.description
-            if scraped.canonical_url:
-                meta["canonical_url"] = scraped.canonical_url
-            if scraped.language:
-                meta["language"] = scraped.language
-            
-            # Store with automatic deduplication
-            stored = store_embedding(body.org_id, bot_id, c, emb, metadata=meta)
-            if stored:
-                inserted += 1
-            else:
-                skipped += 1
+        # Use enhanced scraper with Playwright and Readability (enabled by default)
+        from app.services.enhanced_scraper import scrape_url
+        from app.services.enhanced_rag import chunk_text, embed_text, store_embedding, remove_boilerplate
+        
+        try:
+            scraped = scrape_url(body.url, use_playwright=True, timeout=30)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Scraping failed: {str(e)}")
+        
+        # Remove boilerplate patterns
+        cleaned_content = remove_boilerplate(scraped.content)
+        
+        # Chunk with semantic boundaries
+        chunks: List[str] = chunk_text(cleaned_content)
+        
+        inserted = 0
+        skipped = 0
+        
+        try:
+            for c in chunks:
+                emb = embed_text(c)
+                
+                # Build metadata
+                meta = {
+                    "source_url": scraped.final_url,
+                }
+                if scraped.title:
+                    meta["page_title"] = scraped.title
+                if scraped.description:
+                    meta["description"] = scraped.description
+                if scraped.canonical_url:
+                    meta["canonical_url"] = scraped.canonical_url
+                if scraped.language:
+                    meta["language"] = scraped.language
+                
+                # Store with automatic deduplication
+                stored = store_embedding(body.org_id, bot_id, c, emb, metadata=meta)
+                if stored:
+                    inserted += 1
+                else:
+                    skipped += 1
+        finally:
+            # Unload embedding model to free ~2GB RAM after ingest completes
+            from app.services.enhanced_rag import unload_model
+            unload_model()
+        
+        return {
+            "inserted": inserted,
+            "skipped_duplicates": skipped,
+            "total_chunks": len(chunks),
+            "language": scraped.language,
+        }
     finally:
-        # Unload embedding model to free ~2GB RAM after ingest completes
-        from app.services.enhanced_rag import unload_model
-        unload_model()
-    
-    return {
-        "inserted": inserted,
-        "skipped_duplicates": skipped,
-        "total_chunks": len(chunks),
-        "language": scraped.language,
-    }
+        _INGEST_LOCK.release()
 
 
 @router.post("/ingest/pdf/{bot_id}")
@@ -227,35 +244,43 @@ async def ingest_pdf(
     finally:
         conn.close()
 
-    from io import BytesIO
-    from pypdf import PdfReader
-
-    data = await file.read()
-    reader = PdfReader(BytesIO(data))
-    pages = []
-    for p in reader.pages:
-        try:
-            pages.append(p.extract_text() or "")
-        except Exception:
-            pages.append("")
-    text = "\n".join(pages)
-    chunks: List[str] = chunk_text(text)
-    inserted = 0
-    skipped = 0
+    # Prevent concurrent ingests to avoid memory spikes (max 1 at a time)
+    if not _INGEST_LOCK.acquire(blocking=False):
+        raise HTTPException(status_code=429, detail="Another ingest is running; please wait")
     
     try:
-        for c in chunks:
-            emb = embed_text(c)
-            stored = store_embedding(org_id, bot_id, c, emb, metadata={"source_file": file.filename})
-            if stored:
-                inserted += 1
-            else:
-                skipped += 1
+        from io import BytesIO
+        from pypdf import PdfReader
+
+        data = await file.read()
+        reader = PdfReader(BytesIO(data))
+        pages = []
+        for p in reader.pages:
+            try:
+                pages.append(p.extract_text() or "")
+            except Exception:
+                pages.append("")
+        text = "\n".join(pages)
+        chunks: List[str] = chunk_text(text)
+        inserted = 0
+        skipped = 0
+        
+        try:
+            for c in chunks:
+                emb = embed_text(c)
+                stored = store_embedding(org_id, bot_id, c, emb, metadata={"source_file": file.filename})
+                if stored:
+                    inserted += 1
+                else:
+                    skipped += 1
+        finally:
+            # Unload embedding model to free ~2GB RAM after ingest completes
+            from app.services.enhanced_rag import unload_model
+            unload_model()
+        
+        return {"inserted": inserted, "skipped_duplicates": skipped}
     finally:
-        # Unload embedding model to free ~2GB RAM after ingest completes
-        from app.services.enhanced_rag import unload_model
-        unload_model()
-    
+        _INGEST_LOCK.release()
     return {"inserted": inserted, "skipped_duplicates": skipped}
 
 @router.options("/ingest/pdf/{bot_id}")

@@ -126,6 +126,10 @@ def scrape_with_playwright(url: str, timeout: int = 30000) -> Tuple[str, str]:
                 browser.close()
             except Exception:
                 pass
+            
+            # Force cleanup of Chromium process
+            import gc
+            gc.collect()
 
 
 def scrape_with_requests(url: str, timeout: int = 20) -> Tuple[str, str]:
