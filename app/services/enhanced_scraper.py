@@ -93,8 +93,7 @@ def scrape_with_playwright(url: str, timeout: int = 30000) -> Tuple[str, str]:
     Scrape URL using Playwright for JS-rendered content.
     Returns (html, final_url)
     
-    Note: Requires Playwright browsers to be installed at build time.
-    Railway: Use custom build command: pip install -r requirements.txt && playwright install --with-deps chromium
+    Note: Playwright browsers should be installed at server startup via app/main.py
     """
     if not PLAYWRIGHT_AVAILABLE:
         raise ImportError("Playwright not available")

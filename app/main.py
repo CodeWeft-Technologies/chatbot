@@ -65,8 +65,14 @@ def health_check():
 
 @app.on_event("startup")
 async def startup_event():
-    """Create vector search indexes at startup"""
+    """Initialize server: install Playwright, create indexes, setup schema"""
     logger.info("[STARTUP] Starting up chatbot service...")
+    
+    # Install Playwright browsers at startup (before any requests arrive)
+    try:
+        _install_playwright_browsers()
+    except Exception as e:
+        logger.warning(f"[STARTUP] Playwright installation failed (will fall back to requests): {e}")
     
     # Create vector search indexes for performance
     try:
@@ -75,6 +81,30 @@ async def startup_event():
         logger.warning(f"[STARTUP] Failed to create vector indexes: {e}")
     
     logger.info("[STARTUP] Startup complete")
+
+
+def _install_playwright_browsers():
+    """Install Playwright Chromium at server startup"""
+    import subprocess
+    logger.info("[STARTUP] Installing Playwright Chromium browsers...")
+    try:
+        # Install with system dependencies
+        result = subprocess.run(
+            [sys.executable, "-m", "playwright", "install", "--with-deps", "chromium"],
+            capture_output=True,
+            timeout=300,  # 5 minute timeout
+            check=False  # Don't raise on non-zero exit
+        )
+        if result.returncode == 0:
+            logger.info("[STARTUP] Playwright Chromium installed successfully")
+        else:
+            logger.warning(f"[STARTUP] Playwright install returned code {result.returncode}")
+            if result.stderr:
+                logger.warning(f"[STARTUP] Stderr: {result.stderr.decode('utf-8', errors='ignore')[:200]}")
+    except subprocess.TimeoutExpired:
+        logger.warning("[STARTUP] Playwright installation timed out after 5 minutes")
+    except Exception as e:
+        logger.warning(f"[STARTUP] Failed to install Playwright: {e}")
 
 
 def _init_vector_indexes():
