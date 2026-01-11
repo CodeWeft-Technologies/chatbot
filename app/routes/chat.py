@@ -1971,8 +1971,8 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
             
             
             base = getattr(settings, 'PUBLIC_API_BASE_URL', '') or ''
-            form_url = f"{base}/api/form/{bot_id}?org_id={body.org_id}" + (f"&bot_key={public_api_key}" if public_api_key else "")
-            res_form_url = f"{base}/api/reschedule/{bot_id}?org_id={body.org_id}" + (f"&bot_key={public_api_key}" if public_api_key else "")
+            form_url = f"{base.rstrip('/')}/api/form/{bot_id}?org_id={body.org_id}" + (f"&bot_key={public_api_key}" if public_api_key else "")
+            res_form_url = f"{base.rstrip('/')}/api/reschedule/{bot_id}?org_id={body.org_id}" + (f"&bot_key={public_api_key}" if public_api_key else "")
             
             # Check for ID presence globally to bypass prompts
             m_id_global = re.search(r"\b(?:appointment|id)\s*[:#]?\s*(\d+)\b", msg, re.IGNORECASE)
@@ -2675,7 +2675,7 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
                 sales_intent = _detect_sales_intent(body.message)
                 if sales_intent['is_sales'] and sales_intent['confidence'] >= 0.8:
                     base = getattr(settings, 'PUBLIC_API_BASE_URL', '') or ''
-                    lead_form_url = f"{base}/api/form/lead/{bot_id}?org_id={body.org_id}" + (f"&bot_key={public_api_key}" if public_api_key else "")
+                    lead_form_url = f"{base.rstrip('/')}/api/form/lead/{bot_id}?org_id={body.org_id}" + (f"&bot_key={public_api_key}" if public_api_key else "")
                     
                     # Check for multi-language response needed
                     is_indian_lang = any(ord(c) >= 0x0900 for c in body.message)
@@ -3061,7 +3061,7 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
             sales_intent = _detect_sales_intent(msg)
             if sales_intent.get('is_sales') and sales_intent.get('confidence', 0.0) >= 0.6:
                 base = getattr(settings, 'PUBLIC_API_BASE_URL', '') or ''
-                form_url = f"{base}/api/form/lead/{bot_id}?org_id={body.org_id}" + (f"&bot_key={public_api_key}" if public_api_key else "")
+                form_url = f"{base.rstrip('/')}/api/form/lead/{bot_id}?org_id={body.org_id}" + (f"&bot_key={public_api_key}" if public_api_key else "")
                 
                 response_text = f"I'd be happy to help! Please fill out our [enquiry form]({form_url}) so we can better understand your needs and connect you with the right person."
                 
@@ -3100,8 +3100,8 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
                 
                 if not has_id_global:
                     base = getattr(settings, 'PUBLIC_API_BASE_URL', '') or ''
-                    form_url = f"{base}/api/form/{bot_id}?org_id={body.org_id}" + (f"&bot_key={public_api_key}" if public_api_key else "")
-                    res_form_url = f"{base}/api/reschedule/{bot_id}?org_id={body.org_id}" + (f"&bot_key={public_api_key}" if public_api_key else "")
+                    form_url = f"{base.rstrip('/')}/api/form/{bot_id}?org_id={body.org_id}" + (f"&bot_key={public_api_key}" if public_api_key else "")
+                    res_form_url = f"{base.rstrip('/')}/api/reschedule/{bot_id}?org_id={body.org_id}" + (f"&bot_key={public_api_key}" if public_api_key else "")
                     
                     # Determine intent type and map to response key
                     intent_type = intent_result.get('action', 'book')
@@ -3187,8 +3187,8 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
             pass  # Appointment ID detected
             if ap_id:
                 base = getattr(settings, 'PUBLIC_API_BASE_URL', '') or ''
-                form_url = f"{base}/api/form/{bot_id}?org_id={body.org_id}" + (f"&bot_key={public_api_key}" if public_api_key else "")
-                res_form_url = f"{base}/api/reschedule/{bot_id}?org_id={body.org_id}" + (f"&bot_key={public_api_key}" if public_api_key else "")
+                form_url = f"{base.rstrip('/')}/api/form/{bot_id}?org_id={body.org_id}" + (f"&bot_key={public_api_key}" if public_api_key else "")
+                res_form_url = f"{base.rstrip('/')}/api/reschedule/{bot_id}?org_id={body.org_id}" + (f"&bot_key={public_api_key}" if public_api_key else "")
                 def gen_status(text):
                     lines = str(text).splitlines() or [str(text)]
                     for ln in lines:
@@ -3430,7 +3430,7 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
             import re
             msg = body.message.strip()
             base = getattr(settings, 'PUBLIC_API_BASE_URL', '') or ''
-            form_url = f"{base}/api/form/{bot_id}?org_id={body.org_id}" + (f"&bot_key={public_api_key}" if public_api_key else "")
+            form_url = f"{base.rstrip('/')}/api/form/{bot_id}?org_id={body.org_id}" + (f"&bot_key={public_api_key}" if public_api_key else "")
             def _norm_month(s: str) -> int:
                 m = s.lower()
                 d = {
