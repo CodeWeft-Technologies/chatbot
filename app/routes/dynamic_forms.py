@@ -488,6 +488,29 @@ def create_resource_schedule(resource_id: str, schedule: ResourceScheduleCreate)
     conn = get_conn()
     try:
         with conn.cursor() as cur:
+            # Check for duplicates
+            if schedule.day_of_week is not None:
+                # Check for duplicate weekly slot (same day_of_week and overlapping times)
+                cur.execute("""
+                    select id from resource_schedules
+                    where resource_id = %s 
+                    and day_of_week = %s
+                    and specific_date is null
+                    and start_time = %s
+                """, (resource_id, schedule.day_of_week, schedule.start_time))
+                if cur.fetchone():
+                    raise HTTPException(status_code=409, detail=f"A schedule for this day and time already exists")
+            else:
+                # Check for duplicate specific date slot (same date and overlapping times)
+                cur.execute("""
+                    select id from resource_schedules
+                    where resource_id = %s 
+                    and specific_date = %s
+                    and start_time = %s
+                """, (resource_id, schedule.specific_date, schedule.start_time))
+                if cur.fetchone():
+                    raise HTTPException(status_code=409, detail=f"A schedule for this date and time already exists")
+            
             metadata_json = json.dumps(schedule.metadata) if schedule.metadata else None
             
             cur.execute("""
@@ -505,6 +528,9 @@ def create_resource_schedule(resource_id: str, schedule: ResourceScheduleCreate)
                 "created_at": result[1].isoformat(),
                 **schedule.model_dump()
             }
+    except HTTPException:
+        conn.rollback()
+        raise
     except Exception as e:
         conn.rollback()
         raise HTTPException(status_code=400, detail=str(e))
