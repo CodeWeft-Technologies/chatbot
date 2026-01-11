@@ -333,18 +333,19 @@ def scrape_url(
             
             # If Readability extracted very little, it's likely a homepage/landing page
             # that doesn't fit the article format - use fallback instead
-            if len(content.strip()) < 500:
-                logger.debug(f"Readability extracted only {len(content)} chars, using fallback")
+            if len(content.strip()) < 2000:
+                logger.debug(f"Readability extracted only {len(content)} chars, using fallback extraction")
                 content = extract_content_fallback(soup)
-                logger.debug("Used fallback content extraction")
+                logger.info(f"[SCRAPER] Used FALLBACK extraction (Readability too small: {len(content.strip())} chars)")
             else:
-                logger.debug("Used Readability for content extraction")
+                logger.info(f"[SCRAPER] Used READABILITY extraction ({len(content.strip())} chars)")
         except Exception as e:
             logger.warning(f"Readability failed: {e}")
             content = extract_content_fallback(soup)
+            logger.info(f"[SCRAPER] Used FALLBACK extraction (Readability error: {len(content.strip())} chars)")
     else:
         content = extract_content_fallback(soup)
-        logger.debug("Used fallback content extraction")
+        logger.info(f"[SCRAPER] Used FALLBACK extraction (Readability unavailable: {len(content.strip())} chars)")
     
     # Clean content
     content = clean_text(content)
