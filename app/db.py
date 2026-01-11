@@ -48,11 +48,25 @@ def _ensure_extensions(conn):
 
 
 def get_conn():
-    """Get database connection with vector extension ensured."""
+    """Get database connection with vector extension ensured and retry logic."""
+    import time
     dsn = settings.SUPABASE_DB_DSN
-    conn = psycopg.connect(dsn, autocommit=True)
-    _ensure_extensions(conn)
-    return conn
+    max_retries = 3
+    retry_delay = 0.5  # seconds
+    
+    for attempt in range(max_retries):
+        try:
+            conn = psycopg.connect(dsn, autocommit=True)
+            _ensure_extensions(conn)
+            return conn
+        except Exception as e:
+            if attempt < max_retries - 1:
+                logger.warning(f"Database connection attempt {attempt + 1} failed: {e}. Retrying in {retry_delay}s...")
+                time.sleep(retry_delay)
+                retry_delay *= 2  # Exponential backoff
+            else:
+                logger.error(f"Database connection failed after {max_retries} attempts: {e}")
+                raise
 
 
 def run_query(sql: str, params: Sequence[Any] = ()):

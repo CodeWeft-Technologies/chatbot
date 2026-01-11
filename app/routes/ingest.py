@@ -171,8 +171,12 @@ def ingest_url(bot_id: str, body: UrlBody, x_bot_key: Optional[str] = Header(def
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Scraping failed: {str(e)}")
         
+        print(f"[INGEST-URL] Scraped content length: {len(scraped.content)} chars", flush=True)
+        
         # Remove boilerplate patterns
         cleaned_content = remove_boilerplate(scraped.content)
+        
+        print(f"[INGEST-URL] Cleaned content length: {len(cleaned_content)} chars", flush=True)
         
         # Chunk with semantic boundaries
         chunks: List[str] = chunk_text(cleaned_content)
@@ -180,7 +184,8 @@ def ingest_url(bot_id: str, body: UrlBody, x_bot_key: Optional[str] = Header(def
         inserted = 0
         skipped = 0
         
-        print(f"[INGEST-URL] Processing {len(chunks)} chunks, will call embed_text() for each", flush=True)
+        chunk_sizes = [len(c) for c in chunks]
+        print(f"[INGEST-URL] Processing {len(chunks)} chunks (sizes: {chunk_sizes}), will call embed_text() for each", flush=True)
         
         try:
             for c in chunks:

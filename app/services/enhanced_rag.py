@@ -139,13 +139,13 @@ def chunk_text_semantic(
     if current_chunk:
         chunk_text = " ".join(current_chunk)
         # Only add if meets minimum size or is the only chunk
-        if len(chunk_text) >= min_chunk_size or not chunks:
+        if len(chunk_text.strip()) >= min_chunk_size or not chunks:
             chunks.append(chunk_text)
-        elif chunks:
-            # Append to last chunk if too small
+        elif chunks and chunk_text.strip():
+            # Append to last chunk if too small (only if it's not empty)
             chunks[-1] += " " + chunk_text
     
-    return [c for c in chunks if c.strip()]
+    return [c.strip() for c in chunks if c.strip()]
 
 
 def chunk_text_fallback(text: str, chunk_size: int = 1000, overlap: int = 200) -> List[str]:
@@ -170,7 +170,7 @@ def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> List[st
     """
     if NLTK_AVAILABLE:
         try:
-            return chunk_text_semantic(text, min_chunk_size=200, max_chunk_size=chunk_size)
+            return chunk_text_semantic(text, min_chunk_size=100, max_chunk_size=chunk_size)
         except Exception as e:
             logger.warning(f"Semantic chunking failed: {e}")
     
