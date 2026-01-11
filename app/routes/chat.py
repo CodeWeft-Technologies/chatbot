@@ -627,6 +627,40 @@ def _save_conversation_message(conn, session_id: str, org_id: str, bot_id: str, 
         )
 
 
+def _generate_expanded_queries(query: str) -> list[str]:
+    """
+    Generate expanded/related queries to improve context retrieval.
+    Helps find more relevant chunks when exact match isn't available.
+    """
+    import re
+    expanded = []
+    
+    # Extract key terms
+    words = re.findall(r'\b[a-z]{4,}\b', query.lower())
+    if len(words) >= 2:
+        # Search for combinations of key terms
+        expanded.append(' '.join(words[-2:]))  # Last two key words
+    
+    # Remove question words to get core query
+    core = re.sub(r'^(how|what|when|where|why|can|do|does|is|are|will)\s+', '', query.lower())
+    if core != query.lower():
+        expanded.append(core)
+    
+    # Add synonym-like variations
+    synonyms = {
+        'book': 'appointment schedule',
+        'schedule': 'appointment booking',
+        'help': 'assistance support',
+        'price': 'cost fee',
+        'feature': 'capability function',
+    }
+    for word, syn in synonyms.items():
+        if word in query.lower():
+            expanded.append(query.lower().replace(word, syn.split()[0]))
+    
+    return expanded[:5]  # Return up to 5 expanded queries
+
+
 def _format_response(text: str) -> str:
     """
     Post-process LLM response to ensure proper markdown formatting and spacing.
@@ -2174,20 +2208,21 @@ def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=
                 # Formatting instructions with examples
                 format_instructions = """ 
 
-CRITICAL FORMATTING RULES:
-1. ALWAYS add space after periods, commas, colons
-2. ALWAYS add blank line between topics
-3. Use bullet points for lists with blank line before
-4. Use **bold** for emphasis
-5. Never run words together
+CRITICAL RULES (PRIORITY ORDER):
+1. Keep responses SHORT & INFORMATIVE (2-3 sentences max unless complex)
+2. Get to the point - avoid unnecessary words
+3. Add space after periods, commas, colons, exclamation marks
+4. Add blank line between topics/sections
+5. Use bullet points for lists with blank line before
+6. Use **bold** for key terms and product names
+7. Never run words together
 
-GOOD: I can help with: Scheduling appointments, Exploring products, Learning more
-BAD: I can help with:Scheduling appointmentsExploring productsLearning more"""
+GOOD: Yes, we help with scheduling. Use our booking form to pick available times.
+BAD: We have the capability to assist you with scheduling appointments. Our system uses AI..."""
                 
                 sysmsg = (
                     f"You are a {beh or 'helpful'} assistant. "
                     + (sys or "Answer with general knowledge when needed.")
-                    + " Keep responses short and informative."
                     + format_instructions
                 )
                 
@@ -2227,26 +2262,22 @@ BAD: I can help with:Scheduling appointmentsExploring productsLearning more"""
         # Formatting instructions with examples
         format_instructions = """ 
 
-CRITICAL FORMATTING RULES - YOU MUST FOLLOW THESE:
-1. ALWAYS add a space after every period, comma, colon, and exclamation mark
-2. ALWAYS add a blank line between different topics or sections
-3. Use bullet points (with - or *) for lists, with blank line before the list
-4. Use **bold** for product names or key terms
-5. Add spaces around words - never run words together
+CRITICAL RULES (PRIORITY ORDER):
+1. Keep responses SHORT & INFORMATIVE (2-3 sentences max unless complex)
+2. Get to the point - avoid unnecessary words or explanations
+3. Add a space after every period, comma, colon, and exclamation mark
+4. Add a blank line between different topics or sections
+5. Use bullet points (with - or *) for lists, with blank line before
+6. Use **bold** for product names and key terms
+7. Add spaces around words - never run words together
 
-EXAMPLE OF GOOD FORMATTING:
-I can help you with:
+EXAMPLE OF GOOD RESPONSE (SHORT & INFORMATIVE):
+Yes! You can book an appointment using our form. Select your preferred time from available slots.
 
-- **Scheduling appointments** using our AI system
-- **Exploring AI products** for various industries
-- **Learning about** our solutions
+EXAMPLE OF BAD RESPONSE (TOO LONG & VERBOSE):
+We provide the capability to help you schedule appointments. Our sophisticated system allows you to access a comprehensive booking form where you can view all available time slots and select a time that works best for your schedule.
 
-Would you like to know more?
-
-EXAMPLE OF BAD FORMATTING (NEVER DO THIS):
-I can help you with:Scheduling appointmentsExploring AI productsLearning aboutour solutions
-
-Always format like the GOOD example, never like the BAD example."""
+Always prioritize SHORT and INFORMATIVE responses."""
         
         suffix = " Keep responses short and informative." + format_instructions
         if (behavior or '').strip().lower() == 'appointment':
@@ -3321,7 +3352,30 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
             _ensure_usage_table(conn)
             _log_chat_usage(conn, body.org_id, bot_id, 1.0, False)
             return StreamingResponse(gen_ok(), media_type="text/event-stream")
-        chunks = search_top_chunks(body.org_id, bot_id, body.message, settings.MAX_CONTEXT_CHUNKS)
+        
+        # Enhanced context retrieval with query expansion
+        base_chunks = search_top_chunks(body.org_id, bot_id, body.message, settings.MAX_CONTEXT_CHUNKS)
+        
+        # Query expansion: search for related terms to get more relevant context
+        expanded_queries = _generate_expanded_queries(body.message)
+        expanded_chunks = []
+        for exp_query in expanded_queries[:2]:  # Get top 2 expansions
+            try:
+                exp_chunks = search_top_chunks(body.org_id, bot_id, exp_query, 2)
+                expanded_chunks.extend(exp_chunks)
+            except Exception:
+                pass  # Skip if expansion query fails
+        
+        # Combine and deduplicate chunks, keeping highest similarity scores
+        all_chunks = base_chunks + expanded_chunks
+        seen_content = {}
+        for chunk in all_chunks:
+            content = chunk[0][:100]  # Use first 100 chars as uniqueness key
+            if content not in seen_content or chunk[2] > seen_content[content][2]:
+                seen_content[content] = chunk
+        
+        chunks = sorted(list(seen_content.values()), key=lambda x: x[2], reverse=True)[:settings.MAX_CONTEXT_CHUNKS]
+        
         if not chunks:
             msg = body.message.strip().lower()
             wm = None
@@ -3383,31 +3437,33 @@ def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(d
         # Formatting instructions with examples
         format_instructions = """ 
 
-CRITICAL FORMATTING RULES - YOU MUST FOLLOW THESE:
+CRITICAL RULES - YOU MUST FOLLOW THESE:
+
+**LENGTH & CLARITY (MOST IMPORTANT):**
+- Keep responses SHORT and CONCISE (2-3 sentences maximum unless complex topic)
+- Be INFORMATIVE - only include relevant details
+- Get straight to the point - avoid unnecessary words or explanations
+- Use simple, clear language
+
+**FORMATTING:**
 1. ALWAYS add a space after every period, comma, colon, and exclamation mark
 2. ALWAYS add a blank line between different topics or sections
 3. Use bullet points (with - or *) for lists, with blank line before the list
 4. Use **bold** for product names or key terms
 5. Add spaces around words - never run words together
 
-EXAMPLE OF GOOD FORMATTING:
-I can help you with:
+EXAMPLE OF GOOD RESPONSE (SHORT & INFORMATIVE):
+Yes, we can help! You can **schedule appointments** through our booking form. Just select your preferred time from available slots.
 
-- **Scheduling appointments** using our AI system
-- **Exploring AI products** for various industries
-- **Learning about** our solutions
+EXAMPLE OF BAD RESPONSE (TOO LONG):
+We have the capability to assist you with scheduling appointments. Our system uses artificial intelligence to manage the booking process. You would need to access our booking form where we have implemented a comprehensive system that shows all available time slots, and from there you can select the time that works best for you.
 
-Would you like to know more?
-
-EXAMPLE OF BAD FORMATTING (NEVER DO THIS):
-I can help you with:Scheduling appointmentsExploring AI productsLearning aboutour solutions
-
-Always format like the GOOD example, never like the BAD example."""
+Always prioritize SHORT and INFORMATIVE responses."""
 
         system = (
-            (system_prompt + lead_context_prompt + " Keep responses short and informative." + format_instructions)
+            (system_prompt + lead_context_prompt + format_instructions + "\n\nINTELLIGENCE TIPS:\n- Understand the user's real intent, not just literal words\n- Connect related concepts from the context\n- Ask clarifying questions if intent is ambiguous\n- Provide specific, actionable information")
             if system_prompt
-            else f"You are a {behavior} assistant. Use only the provided context. If the answer is not in context, say: \"I don't have that information.\"{lead_context_prompt} Keep responses short and informative.{format_instructions}"
+            else f"You are a {behavior} assistant. Use only the provided context. If the answer is not in context, say: \"I don't have that information.\"{lead_context_prompt}{format_instructions}\n\nINTELLIGENCE TIPS:\n- Understand the user's real intent, not just literal words\n- Connect related concepts from the context\n- Ask clarifying questions if intent is ambiguous\n- Provide specific, actionable information"
         )
         user = f"Context:\n{context}\n\nQuestion:\n{body.message}"
         
@@ -3424,7 +3480,9 @@ Always format like the GOOD example, never like the BAD example."""
                 
                 resp = client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
-                temperature=0.2,
+                temperature=0.3,  # Higher than before for more natural, varied responses
+                top_p=0.9,  # Nucleus sampling for better quality
+
                 messages=messages,
                 stream=True,
             )
@@ -5853,9 +5911,10 @@ def widget_js():
         "  }\n"
         "  function normalizeWords(t){\n"
         "    if(!t) return t;\n"
-        "    t=t.replace(/\\b([A-HJ-Z])\\s+([a-z]{2,})\\b/g,'$1$2');\n"
-        "    t=t.replace(/\\b([a-z]{3,})\\s+(ing|tion|sion|ment|less|ness|able|ible|ally|fully|ial|ional|tions|ments|ings|ware|care)\\b/g,'$1$2');\n"
-        "    t=t.replace(/\\b(multi|pre|re|con|inter|trans|sub|super|over|under|non|anti|auto|bio|cyber|data|micro|macro|hyper)\\s+([a-z]{3,})\\b/g,'$1$2');\n"
+        "    // Only normalize within words, not after punctuation\n"
+        "    // This preserves spaces after periods, commas, exclamation marks, etc.\n"
+        "    // Remove spaces within hyphenated words that got split: e.g. 'AI - powered' -> 'AI-powered'\n"
+        "    t=t.replace(/([a-z])-\\s+([a-z])/g,'$1-$2');\n"
         "    return t;\n"
         "  }\n"
         "  function joinToken(acc,t){\n"
