@@ -258,8 +258,8 @@ def extract_content_fallback(soup: BeautifulSoup) -> str:
                 try:
                     el = sel(soup)
                     if el:
-                        paragraphs = [p.get_text(" ") for p in el.find_all("p")]
-                        text = "\n".join(paragraphs)
+                        paragraphs = [p.get_text(" ").strip() for p in el.find_all("p") if p.get_text(strip=True)]
+                        text = "\n\n".join(paragraphs)
                         if text:
                             return text
                 except Exception:
@@ -272,9 +272,20 @@ def extract_content_fallback(soup: BeautifulSoup) -> str:
         return max(candidates, key=len) or ""
     
     # For landing pages / homepages with no clear article structure,
-    # extract all visible text from body
+    # extract paragraphs with proper spacing
     body = soup.find("body")
     if body:
+        # Extract paragraphs and other block elements with spacing
+        paragraphs = []
+        for tag in body.find_all(["p", "h1", "h2", "h3", "h4", "h5", "h6", "div", "section", "article"]):
+            text = tag.get_text(" ", strip=True).strip()
+            if text and len(text) > 10:  # Skip very short text
+                paragraphs.append(text)
+        
+        if paragraphs:
+            return "\n\n".join(paragraphs)
+        
+        # Last resort: all text
         return body.get_text("\n", strip=True)
     
     # Last resort: all text
