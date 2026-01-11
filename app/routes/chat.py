@@ -859,14 +859,32 @@ def delete_lead(lead_id: int, org_id: str):
 @router.get("/form/lead/{bot_id}")
 def get_lead_form(bot_id: str, org_id: str, bot_key: Optional[str] = None, session_id: Optional[str] = None):
     # Fetch services and form config from DB
+    # This endpoint can accept either a bot_id or a form_config_id
     conn = get_conn()
     services_list = []
     form_config = {}
+    actual_bot_id = bot_id
+    
     try:
         _ensure_form_config_column(conn)
         with conn.cursor() as cur:
+            # First try to fetch as a bot_id
             cur.execute("select services, form_config from chatbots where id=%s", (bot_id,))
             row = cur.fetchone()
+            
+            # If not found as bot_id, try to look it up as a form_config_id
+            if not row:
+                cur.execute("""
+                    select c.id, c.services, c.form_config
+                    from chatbots c
+                    inner join form_configurations fc on c.id = fc.bot_id
+                    where fc.id=%s and fc.org_id=%s
+                """, (bot_id, org_id))
+                config_row = cur.fetchone()
+                if config_row:
+                    actual_bot_id = str(config_row[0])
+                    row = (config_row[1], config_row[2])
+            
             if row:
                 if row[0]:
                     services_list = row[0]
@@ -878,6 +896,8 @@ def get_lead_form(bot_id: str, org_id: str, bot_key: Optional[str] = None, sessi
                             form_config = {}
                     else:
                         form_config = row[1]
+            else:
+                raise HTTPException(status_code=404, detail="Form configuration not found")
     finally:
         conn.close()
 
@@ -1321,7 +1341,7 @@ def get_lead_form(bot_id: str, org_id: str, bot_key: Optional[str] = None, sessi
 
           const data = {{
             org_id: "{org_id}",
-            bot_id: "{bot_id}",
+            bot_id: "{actual_bot_id}",
             session_id: "{session_id or ''}",
             name: document.getElementById('name').value,
             email: document.getElementById('email').value,
@@ -1357,6 +1377,516 @@ def get_lead_form(bot_id: str, org_id: str, bot_key: Optional[str] = None, sessi
             }}
           }} catch (e) {{
             console.error(e);
+            alert('Error submitting form.');
+            btn.disabled = false;
+            btn.textContent = 'Submit Enquiry';
+          }}
+        }}
+      </script>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html)
+
+
+@router.get("/form/lead-config/{form_config_id}")
+def get_lead_form_by_config(form_config_id: str, org_id: str, bot_key: Optional[str] = None, session_id: Optional[str] = None):
+    """
+    Get lead form by form configuration ID instead of bot_id.
+    This endpoint looks up the bot_id from the form_config_id and returns the form.
+    """
+    conn = get_conn()
+    services_list = []
+    form_config = {}
+    bot_id = None
+    
+    try:
+        _ensure_form_config_column(conn)
+        with conn.cursor() as cur:
+            # First, get the bot_id from form_configurations table
+            cur.execute("""
+                select bot_id, name, description 
+                from form_configurations 
+                where id=%s and org_id=%s
+            """, (form_config_id, org_id))
+            config_row = cur.fetchone()
+            if not config_row:
+                raise HTTPException(status_code=404, detail="Form configuration not found")
+            
+            bot_id = str(config_row[0])
+            
+            # Now fetch the chatbot details
+            cur.execute("select services, form_config from chatbots where id=%s", (bot_id,))
+            row = cur.fetchone()
+            if row:
+                if row[0]:
+                    services_list = row[0]
+                if row[1]:
+                    if isinstance(row[1], str):
+                        try:
+                            form_config = json.loads(row[1])
+                        except Exception:
+                            form_config = {}
+                    else:
+                        form_config = row[1]
+    finally:
+        conn.close()
+
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <style>
+        :root {{
+            --primary: #2563eb;
+            --primary-hover: #1d4ed8;
+            --bg: #f3f4f6;
+            --card-bg: #ffffff;
+            --text-main: #1f2937;
+            --text-muted: #6b7280;
+            --border: #e5e7eb;
+            --error: #ef4444;
+        }}
+        body {{ 
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; 
+            padding: 20px; 
+            margin: 0; 
+            background: var(--bg); 
+            color: var(--text-main);
+            display: flex;
+            justify-content: center;
+            min-height: 100vh;
+        }}
+        #form-container {{
+            background: var(--card-bg);
+            padding: 32px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            width: 100%;
+            max-width: 480px;
+            box-sizing: border-box;
+        }}
+        h2 {{ margin-top: 0; margin-bottom: 24px; font-size: 24px; font-weight: 700; text-align: center; color: #111827; }}
+        .form-group {{ margin-bottom: 20px; }}
+        label {{ display: block; margin-bottom: 8px; font-weight: 600; font-size: 14px; color: #374151; }}
+        .input-wrapper {{ position: relative; }}
+        input, textarea, select {{ 
+            width: 100%; 
+            padding: 12px 16px; 
+            border: 1px solid var(--border); 
+            border-radius: 8px; 
+            font-size: 15px; 
+            box-sizing: border-box; 
+            transition: all 0.2s;
+            background: #f9fafb;
+        }}
+        input:focus, textarea:focus, select:focus {{ 
+            outline: none; 
+            border-color: var(--primary); 
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1); 
+            background: #fff;
+        }}
+        input.invalid {{ border-color: var(--error); box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.1); }}
+        
+        button {{ 
+            width: 100%; 
+            padding: 14px; 
+            background: var(--primary); 
+            color: white; 
+            border: none; 
+            border-radius: 8px; 
+            font-weight: 600; 
+            font-size: 16px;
+            cursor: pointer; 
+            transition: background 0.2s; 
+            margin-top: 8px;
+        }}
+        button:hover {{ background: var(--primary-hover); }}
+        button:disabled {{ opacity: 0.7; cursor: not-allowed; }}
+        
+        .success {{ display: none; text-align: center; padding: 40px 20px; background: white; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }}
+        .success h3 {{ color: #059669; margin-bottom: 12px; font-size: 22px; }}
+        .success p {{ color: var(--text-muted); line-height: 1.5; }}
+        
+        .checkbox-group {{ display: flex; flex-direction: column; gap: 10px; }}
+        .checkbox-item {{ 
+            display: flex; 
+            align-items: center; 
+            gap: 12px; 
+            padding: 10px; 
+            border: 1px solid var(--border); 
+            border-radius: 8px; 
+            cursor: pointer;
+            transition: background 0.1s;
+        }}
+        .checkbox-item:hover {{ background: #f9fafb; }}
+        .checkbox-item input {{ width: 18px; height: 18px; margin: 0; cursor: pointer; }}
+        
+        .helper-text {{ font-size: 12px; color: var(--text-muted); margin-top: 6px; }}
+        .error-msg {{ color: var(--error); font-size: 13px; margin-top: 6px; display: none; font-weight: 500; }}
+        
+        .tag {{ 
+            background: #eff6ff; 
+            color: #1d4ed8; 
+            padding: 6px 12px; 
+            border-radius: 20px; 
+            font-size: 13px; 
+            display: inline-flex; 
+            align-items: center; 
+            gap: 6px; 
+            font-weight: 500;
+        }}
+        .tag span {{ cursor: pointer; opacity: 0.6; font-size: 16px; line-height: 1; }}
+        .tag span:hover {{ opacity: 1; }}
+        
+        /* Input prefix for phone */
+        .phone-input-container {{ display: flex; position: relative; }}
+        .phone-prefix {{
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0 12px;
+            background: #f3f4f6;
+            border: 1px solid var(--border);
+            border-right: none;
+            border-radius: 8px 0 0 8px;
+            color: #4b5563;
+            font-weight: 500;
+            font-size: 14px;
+            white-space: nowrap;
+        }}
+        .phone-input-container input {{ border-radius: 0 8px 8px 0; }}
+        .phone-input-container.has-prefix input {{ border-radius: 0 8px 8px 0; }}
+        .phone-input-container:not(.has-prefix) input {{ border-radius: 8px; }}
+        
+        .required-mark {{ color: var(--error); margin-left: 4px; }}
+        
+      </style>
+    </head>
+    <body>
+      <div id="form-container">
+        <h2>Contact Us</h2>
+        <div class="form-group">
+          <label>Name <span class="required-mark">*</span></label>
+          <input type="text" id="name" required placeholder="Your full name">
+        </div>
+        <div class="form-group">
+          <label>Email <span class="required-mark">*</span></label>
+          <input type="email" id="email" required placeholder="you@company.com">
+          <div id="email-helper" class="helper-text"></div>
+          <div id="email-error" class="error-msg">Please enter a valid email address.</div>
+        </div>
+        <div class="form-group">
+          <label>Phone <span class="required-mark">*</span></label>
+          <div class="phone-input-container" id="phone-container">
+             <!-- Prefix injected by JS if needed -->
+             <input type="tel" id="phone" required placeholder="123 456 7890">
+          </div>
+          <div id="phone-helper" class="helper-text"></div>
+          <div id="phone-error" class="error-msg">Please enter a valid phone number.</div>
+        </div>
+        
+        <div class="form-group">
+          <label>Services of Interest <span class="required-mark" id="services-required" style="display:none">*</span></label>
+          <div id="services-container">
+            {'<div class="checkbox-group">' + ''.join([f'<label class="checkbox-item"><input type="checkbox" value="{s}" onchange="updateServices()">{s}</label>' for s in services_list]) + '</div>' if services_list else ''}
+            <div class="service-input-group" style="display: flex; gap: 8px; margin-bottom: 12px; margin-top: 12px;">
+              <input type="text" id="service-input" placeholder="Other service..." onkeypress="if(event.key==='Enter'){{event.preventDefault();addService();}}">
+              <button type="button" onclick="addService()" style="width: auto; padding: 0 20px; margin: 0; background: #4b5563;">Add</button>
+            </div>
+            <div id="tags-container" style="display: flex; flex-wrap: wrap; gap: 8px;">
+              <!-- Tags will appear here -->
+            </div>
+            <input type="hidden" id="interest-details-hidden">
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label>Additional Comments</label>
+          <textarea id="interest" rows="3" placeholder="Any specific requirements or questions?"></textarea>
+        </div>
+        <button onclick="submitForm()">Submit Enquiry</button>
+      </div>
+      <div id="success" class="success">
+        <div style="font-size: 48px; margin-bottom: 16px;">🎉</div>
+        <h3>Thank you!</h3>
+        <p>We have received your details and will contact you shortly.</p>
+      </div>
+      <script>
+        const services = [];
+        const preDefinedServices = {services_list};
+        const formConfig = {json.dumps(form_config)};
+        const botId = '{bot_id}';
+
+        // Initialize UI based on config
+        (function initUI() {{
+            // Services required check
+            if (preDefinedServices && preDefinedServices.length > 0) {{
+                const sr = document.getElementById('services-required');
+                if (sr) sr.style.display = 'inline';
+            }}
+
+            // Email helper and placeholder
+            const emailInput = document.getElementById('email');
+            if (formConfig.email_domains && formConfig.email_domains.length > 0) {{
+                const domains = formConfig.email_domains.join(', ');
+                document.getElementById('email-helper').textContent = 'Allowed domains: ' + domains;
+                if (formConfig.email_domains.length === 1) {{
+                    emailInput.placeholder = 'name@' + formConfig.email_domains[0];
+                }}
+            }}
+
+            // Phone UI
+            const phoneContainer = document.getElementById('phone-container');
+            const phoneInput = document.getElementById('phone');
+            const phoneHelper = document.getElementById('phone-helper');
+            
+            if (formConfig.phone_country_code) {{
+                const prefix = document.createElement('div');
+                prefix.className = 'phone-prefix';
+                prefix.textContent = formConfig.phone_country_code;
+                phoneContainer.insertBefore(prefix, phoneInput);
+                phoneContainer.classList.add('has-prefix');
+            }}
+
+            let helperText = [];
+            if (formConfig.phone_restriction) {{
+                if (formConfig.phone_restriction === 'digits_only') {{
+                    helperText.push('Digits only');
+                    phoneInput.placeholder = '1234567890';
+                }}
+                if (formConfig.phone_restriction === '10_digits') {{
+                    helperText.push('10 digits required');
+                    phoneInput.placeholder = '9876543210';
+                }}
+                if (formConfig.phone_restriction === '10_plus_digits') {{
+                    helperText.push('Min 10 digits');
+                }}
+            }}
+            if (helperText.length > 0) {{
+                phoneHelper.textContent = helperText.join(', ');
+            }}
+        }})();
+
+        function updateServices() {{
+          const checkboxes = document.querySelectorAll('.checkbox-item input:checked');
+          const checked = Array.from(checkboxes).map(c => c.value);
+          // Combine checked with manually added services
+          const all = [...new Set([...checked, ...services])];
+          document.getElementById('interest-details-hidden').value = all.join(', ');
+        }}
+
+        function addService() {{
+          const input = document.getElementById('service-input');
+          const val = input.value.trim();
+          if (val && !services.includes(val)) {{
+            services.push(val);
+            renderTags();
+            input.value = '';
+            updateServices();
+          }}
+        }}
+
+        function removeService(idx) {{
+          services.splice(idx, 1);
+          renderTags();
+          updateServices();
+        }}
+
+        function renderTags() {{
+          const container = document.getElementById('tags-container');
+          container.innerHTML = services.map((s, i) => `
+            <span class="tag">
+              ${{s}}
+              <span onclick="removeService(${{i}})">&times;</span>
+            </span>
+          `).join('');
+        }}
+        
+        // Initialize
+        updateServices();
+
+        // Validation helpers
+        function validateEmail(email) {{
+          const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+          if (!re.test(email)) return false;
+          
+          // Domain restriction
+          if (formConfig.email_domains && formConfig.email_domains.length > 0) {{
+            const domain = email.split('@')[1].toLowerCase();
+            return formConfig.email_domains.some(d => domain === d.toLowerCase() || domain.endsWith('.' + d.toLowerCase()));
+          }}
+          return true;
+        }}
+
+        function validatePhone(phone) {{
+          if (!phone) return true;
+          
+          let cleanPhone = phone.replace(/[\s-]/g, '');
+          const digits = phone.replace(/\D/g, '');
+          
+          // Country code validation logic
+          if (formConfig.phone_country_code) {{
+             const code = formConfig.phone_country_code;
+             const codeDigits = code.replace(/\D/g, '');
+             
+             // If user typed the code, strip it for length check
+             if (cleanPhone.startsWith(code) || cleanPhone.startsWith('+' + codeDigits) || cleanPhone.startsWith('00' + codeDigits)) {{
+                 // It has the code, effectively valid prefix-wise
+             }} else {{
+                 // User didn't type code, that's fine if we are showing the prefix
+             }}
+          }}
+
+          const restriction = formConfig.phone_restriction || '';
+          
+          // Calculate effective length (ignoring country code if present in input)
+          let effectiveDigits = digits;
+          if (formConfig.phone_country_code) {{
+             const codeDigits = formConfig.phone_country_code.replace(/\D/g, '');
+             if (digits.startsWith(codeDigits)) {{
+                 effectiveDigits = digits.substring(codeDigits.length);
+             }}
+          }}
+          
+          if (restriction === 'digits_only') {{
+             return !/[a-zA-Z]/.test(phone) && effectiveDigits.length >= 7; 
+          }} else if (restriction === '10_digits') {{
+             return effectiveDigits.length === 10;
+          }} else if (restriction === '10_plus_digits') {{
+             return effectiveDigits.length >= 10;
+          }}
+          
+          return digits.length >= 7;
+        }}
+
+        // Update error messages based on config
+        const emailErrorMsg = document.getElementById('email-error');
+        if (formConfig.email_domains && formConfig.email_domains.length > 0) {{
+            emailErrorMsg.textContent = 'Please enter a valid email address from allowed domains (' + formConfig.email_domains.join(', ') + ').';
+        }}
+        
+        const phoneErrorMsg = document.getElementById('phone-error');
+        if (formConfig.phone_country_code || formConfig.phone_restriction) {{
+            let msg = '';
+            
+            // If prefix is shown, we don't need to tell them to start with it, just valid number
+            if (formConfig.phone_restriction === '10_digits') {{
+                msg = 'Must be exactly 10 digits.';
+            }} else if (formConfig.phone_restriction === '10_plus_digits') {{
+                msg = 'Must be at least 10 digits.';
+            }} else if (!msg) {{
+                msg = 'Please enter a valid phone number.';
+            }}
+            
+            phoneErrorMsg.textContent = msg;
+        }}
+
+        // Add event listeners
+        const emailInput = document.getElementById('email');
+        const phoneInput = document.getElementById('phone');
+        const emailError = document.getElementById('email-error');
+        const phoneError = document.getElementById('phone-error');
+
+        if (emailInput) {{
+            emailInput.addEventListener('input', function() {{
+              if (validateEmail(this.value)) {{
+                emailError.style.display = 'none';
+                this.classList.remove('invalid');
+              }}
+            }});
+            
+            emailInput.addEventListener('blur', function() {{
+              if (!validateEmail(this.value)) {{
+                emailError.style.display = 'block';
+                this.classList.add('invalid');
+              }} else {{
+                emailError.style.display = 'none';
+                this.classList.remove('invalid');
+              }}
+            }});
+        }}
+
+        if (phoneInput) {{
+            phoneInput.addEventListener('input', function() {{
+              if (validatePhone(this.value)) {{
+                phoneError.style.display = 'none';
+                this.classList.remove('invalid');
+              }}
+            }});
+            
+            phoneInput.addEventListener('blur', function() {{
+              if (!validatePhone(this.value)) {{
+                phoneError.style.display = 'block';
+                this.classList.add('invalid');
+              }} else {{
+                phoneError.style.display = 'none';
+                this.classList.remove('invalid');
+              }}
+            }});
+        }}
+
+        async function submitForm() {{
+          const name = document.getElementById('name').value.trim();
+          const email = document.getElementById('email').value.trim();
+          const phone = document.getElementById('phone').value.trim();
+          const interest = document.getElementById('interest').value.trim();
+          const interestDetails = document.getElementById('interest-details-hidden').value.trim();
+
+          if (!name || !email || !phone) {{
+            alert('Please fill in all required fields.');
+            return;
+          }}
+
+          if (!validateEmail(email)) {{
+            alert('Please enter a valid email address.');
+            return;
+          }}
+
+          if (!validatePhone(phone)) {{
+            alert('Please enter a valid phone number.');
+            return;
+          }}
+
+          const btn = document.querySelector('button');
+          btn.disabled = true;
+          btn.textContent = 'Submitting...';
+
+          try {{
+            const res = await fetch('/api/leads/submit', {{
+              method: 'POST',
+              headers: {{ 'Content-Type': 'application/json' }},
+              body: JSON.stringify({{
+                org_id: '{org_id}',
+                bot_id: botId,
+                name: name,
+                email: email,
+                phone: phone,
+                interest_details: interestDetails || null,
+                comments: interest || null,
+                conversation_summary: null,
+                interest_score: 0
+              }})
+            }});
+
+            if (res.ok) {{
+              document.getElementById('form-container').style.display = 'none';
+              document.getElementById('success').style.display = 'block';
+              // Optional: notify parent/opener
+              if (window.opener) {{
+                window.opener.postMessage({{ type: 'LEAD_SUBMITTED', id: email }}, '*');
+              }}
+              if (window.parent !== window) {{
+                window.parent.postMessage({{ type: 'LEAD_SUBMITTED', id: email }}, '*');
+              }}
+            }} else {{
+              alert('Error submitting form: ' + await res.text());
+              btn.disabled = false;
+              btn.textContent = 'Submit Enquiry';
+            }}
+          }} catch (err) {{
+            console.error(err);
             alert('Error submitting form.');
             btn.disabled = false;
             btn.textContent = 'Submit Enquiry';
