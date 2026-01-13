@@ -591,7 +591,7 @@ _SESSION_STATE = defaultdict(dict)
 
 
 def _get_conversation_history(conn, session_id: str, org_id: str, bot_id: str, max_messages: int = 10):
-    """Retrieve conversation history for a session (last 24 hours)"""
+    """Retrieve conversation history for a session (last 24 hours) with token limit protection"""
     if not session_id:
         return []
     
@@ -609,7 +609,20 @@ def _get_conversation_history(conn, session_id: str, org_id: str, bot_id: str, m
         rows = cur.fetchall()
     
     # Reverse to get chronological order
-    return [{"role": row[0], "content": row[1]} for row in reversed(rows)]
+    history = [{"role": row[0], "content": row[1]} for row in reversed(rows)]
+    
+    # Enforce token limit: ~4000 tokens = ~15000 chars (4 chars per token average)
+    max_chars = 15000
+    total_chars = sum(len(msg.get("content", "")) for msg in history)
+    
+    # If history is too large, remove oldest messages first
+    while total_chars > max_chars and len(history) > 1:
+        removed = history.pop(0)
+        total_chars -= len(removed.get("content", ""))
+        import logging
+        logging.warning(f"[HISTORY] Removed old message due to token limit. Remaining: {total_chars} chars, {len(history)} messages")
+    
+    return history
 
 
 def _save_conversation_message(conn, session_id: str, org_id: str, bot_id: str, role: str, content: str):
@@ -785,7 +798,7 @@ def submit_lead(body: LeadBody, x_bot_key: Optional[str] = Header(default=None))
         summary = body.conversation_summary
         if not summary and body.session_id:
             try:
-                hist = _get_conversation_history(conn, body.session_id, body.org_id, body.bot_id, max_messages=20)
+                hist = _get_conversation_history(conn, body.session_id, body.org_id, body.bot_id, max_messages=6)
                 if hist:
                     lines = []
                     for msg in hist:
@@ -2761,6 +2774,12 @@ BAD: We have the capability to assist you with scheduling appointments. Our syst
                 messages.extend(history)  # Add conversation history
                 messages.append({"role": "user", "content": body.message})
                 
+                # Log message size for debugging long conversation issues
+                total_chars = sum(len(m.get("content", "")) for m in messages)
+                if total_chars > 30000:
+                    import logging
+                    logging.warning(f"[CHAT_NO_KNOWLEDGE] Large message context detected: {total_chars} chars, messages: {len(messages)}")
+                
                 resp = client.chat.completions.create(
                     model="llama-3.3-70b-versatile",
                     temperature=0.5,
@@ -2772,7 +2791,9 @@ BAD: We have the capability to assist you with scheduling appointments. Our syst
                 if body.session_id:
                     _save_conversation_message(conn, body.session_id, body.org_id, bot_id, "user", body.message)
                     _save_conversation_message(conn, body.session_id, body.org_id, bot_id, "assistant", answer)
-            except Exception:
+            except Exception as e:
+                import logging
+                logging.error(f"[CHAT_NO_KNOWLEDGE] Error in chat response: {str(e)}", exc_info=True)
                 answer = "I don't have that information."
             _ensure_usage_table(conn)
             _log_chat_usage(conn, body.org_id, bot_id, 0.0, True)
@@ -2823,13 +2844,19 @@ Always prioritize SHORT and INFORMATIVE responses."""
         user = f"Context:\n{context}\n\nQuestion:\n{body.message}"
         
         # Get conversation history for context
-        history = _get_conversation_history(conn, body.session_id, body.org_id, bot_id, max_messages=8)
+        history = _get_conversation_history(conn, body.session_id, body.org_id, bot_id, max_messages=6)
 
         try:
             # Build messages with conversation history
             messages = [{"role": "system", "content": system}]
             messages.extend(history)  # Add conversation history
             messages.append({"role": "user", "content": user})
+            
+            # Log message size for debugging long conversation issues
+            total_chars = sum(len(m.get("content", "")) for m in messages)
+            if total_chars > 30000:
+                import logging
+                logging.warning(f"[CHAT] Large message context detected: {total_chars} chars, messages: {len(messages)}")
             
             resp = client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
@@ -2842,7 +2869,9 @@ Always prioritize SHORT and INFORMATIVE responses."""
             if body.session_id:
                 _save_conversation_message(conn, body.session_id, body.org_id, bot_id, "user", body.message)
                 _save_conversation_message(conn, body.session_id, body.org_id, bot_id, "assistant", answer)
-        except Exception:
+        except Exception as e:
+            import logging
+            logging.error(f"[CHAT] Error in chat response: {str(e)}", exc_info=True)
             answer = "I don't have that information."
         import math
         sim = float(chunks[0][2])
@@ -3998,7 +4027,7 @@ Always prioritize SHORT and INFORMATIVE responses."""
         user = f"Context:\n{context}\n\nQuestion:\n{body.message}"
         
         # Get conversation history for context
-        history = _get_conversation_history(conn, body.session_id, body.org_id, bot_id, max_messages=8)
+        history = _get_conversation_history(conn, body.session_id, body.org_id, bot_id, max_messages=6)
 
         def gen():
             full_response = ""
