@@ -6518,7 +6518,7 @@ def widget_js():
         "    </div>\n"
         "    <div class=\"cb-body\"></div>\n"
         "    <div class=\"cb-input\">\n"
-        "      <input type=\"text\" placeholder=\"Ask a question...\">\n"
+        "      <input type=\"text\" placeholder=\"Ask a question...\" maxlength=\"1000\">\n"
         "      <button class=\"cb-send\">Send</button>\n"
         "    </div>\n"
         "    <div class=\"cb-footer\"></div>\n"
