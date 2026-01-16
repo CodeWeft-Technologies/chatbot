@@ -2783,6 +2783,7 @@ BAD: We have the capability to assist you with scheduling appointments. Our syst
                 resp = client.chat.completions.create(
                     model="llama-3.3-70b-versatile",
                     temperature=0.5,
+                    max_tokens=1000,
                     messages=messages,
                 )
                 answer = _format_response(resp.choices[0].message.content)
@@ -2861,6 +2862,7 @@ Always prioritize SHORT and INFORMATIVE responses."""
             resp = client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
                 temperature=0.2,
+                max_tokens=1000,
                 messages=messages,
             )
             answer = _format_response(resp.choices[0].message.content)
@@ -4041,7 +4043,7 @@ Always prioritize SHORT and INFORMATIVE responses."""
                 model="llama-3.3-70b-versatile",
                 temperature=0.3,  # Higher than before for more natural, varied responses
                 top_p=0.9,  # Nucleus sampling for better quality
-
+                max_tokens=1000,
                 messages=messages,
                 stream=True,
             )
