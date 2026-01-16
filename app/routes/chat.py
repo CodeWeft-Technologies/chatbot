@@ -40,6 +40,7 @@ async def proxy_image(url: str, request: Request):
 from app.config import settings
 from app.rag import search_top_chunks
 from app.db import get_conn, normalize_org_id
+from app.services.message_tracking import log_user_message
 from collections import defaultdict, deque
 import time
 import base64, json, hmac, hashlib, uuid, datetime
@@ -1919,6 +1920,12 @@ def get_lead_form_by_config(form_config_id: str, org_id: str, bot_key: Optional[
 def chat(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=None)):
     conn = get_conn()
     try:
+        # Log user message for billing
+        try:
+            log_user_message(conn, body.org_id, bot_id, body.session_id)
+        except Exception as e:
+            print(f"[MESSAGE_TRACKING] Error logging user message: {e}")
+        
         behavior, system_prompt, public_api_key = get_bot_meta(conn, bot_id, body.org_id)
         if public_api_key:
             if not x_bot_key or x_bot_key != public_api_key:
@@ -3065,6 +3072,12 @@ def options_bots():
 def chat_stream(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=None)):
     conn = get_conn()
     try:
+        # Log user message for billing
+        try:
+            log_user_message(conn, body.org_id, bot_id, body.session_id)
+        except Exception as e:
+            print(f"[MESSAGE_TRACKING] Error logging user message: {e}")
+        
         behavior, system_prompt, public_api_key = get_bot_meta(conn, bot_id, body.org_id)
         if public_api_key:
             if not x_bot_key or x_bot_key != public_api_key:

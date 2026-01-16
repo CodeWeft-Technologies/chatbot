@@ -380,3 +380,33 @@ def _require_auth(authorization: Optional[str], org_id: str):
     if normalize_org_id(tok_org or '') != normalize_org_id(org_id):
         raise HTTPException(status_code=403, detail="forbidden for org")
     return payload
+
+
+@router.get("/message-usage/{org_id}")
+def message_usage_org(org_id: str, days: int = 30, authorization: Optional[str] = Header(default=None)):
+    """Get message usage stats for entire organization (all bots)"""
+    _require_auth(authorization, org_id)
+    from app.db import get_conn
+    from app.services.message_tracking import get_message_usage_stats
+    
+    conn = get_conn()
+    try:
+        stats = get_message_usage_stats(conn, org_id, bot_id=None, days=days)
+        return stats
+    finally:
+        conn.close()
+
+
+@router.get("/message-usage/{org_id}/{bot_id}")
+def message_usage_bot(org_id: str, bot_id: str, days: int = 30, authorization: Optional[str] = Header(default=None)):
+    """Get message usage stats for a specific bot (for billing)"""
+    _require_auth(authorization, org_id)
+    from app.db import get_conn
+    from app.services.message_tracking import get_message_usage_stats
+    
+    conn = get_conn()
+    try:
+        stats = get_message_usage_stats(conn, org_id, bot_id=bot_id, days=days)
+        return stats
+    finally:
+        conn.close()
