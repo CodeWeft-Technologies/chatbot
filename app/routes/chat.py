@@ -6467,8 +6467,6 @@ def widget_js():
         "        }\n"
         "        return '<img src=\"'+fullUrl+'\" alt=\"'+alt+'\" style=\"max-width:100%;height:auto;border-radius:calc(var(--cb-radius) - 2px);display:block;\">';\n"
         "     });\n"
-        "      root.style.setProperty('--cb-lsize', LSIZE+'px');\n"
-        "      root.style.setProperty('--cb-mlsize', MLSIZE+'px');\n"
         "     t=t.replace(/```([\\s\\S]*?)```/g,function(_,c){return '<pre><code>'+c+'</code></pre>';});\n"
         "     t=t.replace(/`([^`]+)`/g,'<code>$1</code>');\n"
         "     t=t.replace(/\\*\\*([^*]+)\\*\\*/g,'<strong>$1</strong>');\n"
