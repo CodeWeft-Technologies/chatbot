@@ -66,10 +66,6 @@ COPY . .
 EXPOSE 8000
 
 # ===============================
-# Entrypoint (Railway-safe $PORT handling)
+# Start server
 # ===============================
-RUN echo '#!/bin/sh' > /app/entrypoint.sh && \
-    echo 'exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1' >> /app/entrypoint.sh && \
-    chmod +x /app/entrypoint.sh
-
-ENTRYPOINT ["/app/entrypoint.sh"]
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1"]
