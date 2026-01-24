@@ -377,7 +377,7 @@ async def ingest_file(
                     file_bytes,  # Store file bytes for background worker to process
                     "pending",
                     0,
-                    "api_upload"
+                    "00000000-0000-0000-0000-000000000000"  # nil UUID for API upload
                 ))
                 result = cur.fetchone()
                 conn.commit()
