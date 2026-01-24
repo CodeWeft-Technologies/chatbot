@@ -13,16 +13,19 @@ import logging
 import hashlib
 import os
 import json
+import base64
 from typing import List, Dict, Any, Optional, Tuple, Union
 from enum import Enum
 from pathlib import Path
 
 from langchain_core.documents import Document
+import google.generativeai as genai
 
 logger = logging.getLogger(__name__)
 
 # For AI summaries
 _openai_client = None
+_gemini_model = None
 
 
 def _get_openai_client():
@@ -35,6 +38,30 @@ def _get_openai_client():
         except Exception as e:
             logger.warning(f"Failed to initialize OpenAI client: {e}")
     return _openai_client
+
+
+def _get_gemini_model():
+    """Get or create Gemini model (vision-capable)."""
+    global _gemini_model
+    if _gemini_model is None:
+        api_key = os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            logger.warning("GEMINI_API_KEY not set; Gemini features disabled")
+            return None
+        try:
+            genai.configure(api_key=api_key)
+            model_name = os.getenv("GEMINI_MODEL_NAME", "gemini-2.5-pro")
+            _gemini_model = genai.GenerativeModel(
+                model_name,
+                generation_config={
+                    "temperature": 0.2,
+                    "max_output_tokens": 800
+                },
+            )
+        except Exception as e:
+            logger.warning(f"Failed to initialize Gemini model: {e}")
+            _gemini_model = None
+    return _gemini_model
 
 
 class DocumentType(Enum):
@@ -262,7 +289,6 @@ async def _extract_image(file_bytes: bytes) -> Tuple[List[Any], Dict[str, Any]]:
     """
     try:
         from unstructured.documents.elements import Text as TextElement
-        import base64
         
         logger.info("[EXTRACT-IMAGE] Preparing standalone image for LLM processing...")
         
@@ -360,6 +386,35 @@ def chunk_elements_by_title(
         raise
 
 
+def _detect_image_mime_type(base64_str: str) -> str:
+    """
+    Detect MIME type from base64 magic bytes.
+    
+    Args:
+        base64_str: Base64 encoded image string
+    
+    Returns:
+        MIME type string (e.g., 'image/jpeg', 'image/png')
+    """
+    try:
+        import base64 as b64_module
+        # Decode first few bytes to check magic numbers
+        decoded = b64_module.b64decode(base64_str[:100])
+        
+        if decoded.startswith(b'\x89PNG'):
+            return 'image/png'
+        elif decoded.startswith(b'\xff\xd8\xff'):
+            return 'image/jpeg'
+        elif decoded.startswith(b'RIFF') and b'WEBP' in decoded[:20]:
+            return 'image/webp'
+        elif decoded.startswith(b'GIF8'):
+            return 'image/gif'
+        else:
+            return 'image/jpeg'  # Default fallback
+    except Exception:
+        return 'image/jpeg'  # Default fallback
+
+
 def separate_content_types(chunk: Any) -> Dict[str, Any]:
     """
     Analyze what types of content are in a chunk.
@@ -367,7 +422,7 @@ def separate_content_types(chunk: Any) -> Dict[str, Any]:
     Returns dict with:
     - text: Main text content
     - tables: List of table HTML
-    - images: List of image base64
+    - images: List of (base64, mime_type) tuples
     - types: List of content types found
     
     Args:
@@ -379,7 +434,7 @@ def separate_content_types(chunk: Any) -> Dict[str, Any]:
     content_data = {
         'text': chunk.text,
         'tables': [],
-        'images': [],
+        'images': [],  # Now stores tuples of (base64, mime_type)
         'types': set(['text'])
     }
     
@@ -408,8 +463,10 @@ def separate_content_types(chunk: Any) -> Dict[str, Any]:
                     
                     if hasattr(element, 'metadata') and hasattr(element.metadata, 'image_base64'):
                         image_b64 = element.metadata.image_base64
-                        content_data['images'].append(image_b64)
-                        logger.debug(f"[CONTENT] Found image in chunk")
+                        # Detect MIME type from base64 magic bytes
+                        mime_type = _detect_image_mime_type(image_b64)
+                        content_data['images'].append((image_b64, mime_type))
+                        logger.debug(f"[CONTENT] Found image in chunk ({mime_type})")
     
     except Exception as e:
         logger.warning(f"[CONTENT-ERROR] Error analyzing chunk content: {e}")
@@ -421,38 +478,38 @@ def separate_content_types(chunk: Any) -> Dict[str, Any]:
 def create_ai_enhanced_summary(
     text: str,
     tables: List[str],
-    images: List[str],
+    images: List[Tuple[str, str]],
 ) -> str:
     """
-    Create AI-enhanced summary for chunks with images/tables using GPT-4 Vision.
+    Create AI-enhanced summary for chunks with images/tables using Gemini Vision.
     
     Args:
         text: Text content
         tables: List of table HTML
-        images: List of image base64
+        images: List of (base64_image, mime_type) tuples
     
     Returns:
         Enhanced summary optimized for search and retrieval
     """
     try:
-        client = _get_openai_client()
-        if not client:
-            logger.debug("[SUMMARY] No OpenAI client - skipping AI summary")
-            return text
-        
+        model = _get_gemini_model()
+        if not model:
+            logger.debug("[SUMMARY] No Gemini model - skipping AI summary")
+            raise RuntimeError("Gemini unavailable")
+
         # Build the text prompt
         prompt_text = f"""You are creating a comprehensive, searchable description for RAG document retrieval.
 
 TEXT CONTENT:
 {text}
 """
-        
+
         # Add tables if present
         if tables:
             prompt_text += "\nTABLES:\n"
             for i, table in enumerate(tables):
                 prompt_text += f"Table {i+1}:\n{table}\n\n"
-        
+
         prompt_text += """
 YOUR TASK:
 Generate a detailed, searchable description that includes:
@@ -466,32 +523,32 @@ Make it comprehensive and findable - optimize for search relevance.
 
 DESCRIPTION:"""
 
-        # Build message content
-        message_content = [{"type": "text", "text": prompt_text}]
-        
-        # Add images to the message for vision analysis
-        for image_base64 in images:
-            message_content.append({
-                "type": "image_url",
-                "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}
-            })
-        
-        # Call GPT-4 Turbo with vision
-        response = client.chat.completions.create(
-            model="gpt-4-turbo",
-            messages=[
-                {
-                    "role": "user",
-                    "content": message_content
-                }
+        # Build parts for Gemini (text + optional images)
+        parts: List[Union[str, Dict[str, Any]]] = [prompt_text]
+        for img_b64, mime_type in images:
+            try:
+                parts.append({
+                    "inline_data": {
+                        "mime_type": mime_type,
+                        "data": img_b64,
+                    }
+                })
+            except Exception:
+                continue
+
+        response = model.generate_content(
+            parts,
+            generation_config={"max_output_tokens": 800},
+            safety_settings=[
+                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
             ],
-            max_tokens=800,
         )
-        
-        summary = response.choices[0].message.content
-        logger.info(f"[SUMMARY] AI summary created: {len(summary)} chars")
+        summary = response.text
+        logger.info(f"[SUMMARY] AI summary created with Gemini: {len(summary)} chars")
         return summary
-    
     except Exception as e:
         logger.debug(f"[SUMMARY] AI summary failed: {e} - using original text")
         # Fallback to original text with metadata hints
@@ -533,32 +590,32 @@ def create_langchain_documents(
         image_format = standalone_image_meta.get('image_format', 'jpg')
         
         try:
-            logger.info("[LANGCHAIN] Summarizing image with GPT-4 Turbo...")
-            from openai import OpenAI
-            client = OpenAI()
-            
-            response = client.chat.completions.create(
-                model="gpt-4-turbo",
-                messages=[
+            logger.info("[LANGCHAIN] Summarizing image with Gemini...")
+            model = _get_gemini_model()
+            if not model:
+                raise RuntimeError("Gemini model not available")
+
+            response = model.generate_content(
+                [
+                    "Provide a comprehensive, detailed description of this image that would be useful for search and retrieval. Include: main subjects, visible text, layout, colors, any diagrams or charts, and key details.",
                     {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": "Provide a comprehensive, detailed description of this image that would be useful for search and retrieval. Include: main subjects, text visible, layout, colors, any diagrams or charts, and key details."},
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/{image_format};base64,{base64_image}",
-                                    "detail": "high"
-                                }
-                            }
-                        ]
-                    }
+                        "inline_data": {
+                            "mime_type": f"image/{image_format}",
+                            "data": base64_image,
+                        }
+                    },
                 ],
-                max_tokens=1000,
+                generation_config={"max_output_tokens": 1000},
+                safety_settings=[
+                    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+                ],
             )
-            
-            enhanced_content = response.choices[0].message.content
-            logger.info(f"[LANGCHAIN] LLM generated {len(enhanced_content)} char summary for image")
+
+            enhanced_content = response.text
+            logger.info(f"[LANGCHAIN] Gemini generated {len(enhanced_content)} char summary for image")
             
             # Create single LangChain document for standalone image
             metadata = {
