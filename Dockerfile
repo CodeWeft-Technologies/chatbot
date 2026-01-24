@@ -61,6 +61,11 @@ RUN python setup_nltk_data.py
 COPY . .
 
 # ===============================
+# Make start script executable
+# ===============================
+RUN chmod +x start.py
+
+# ===============================
 # Expose port (Railway ignores but good practice)
 # ===============================
 EXPOSE 8000
@@ -68,4 +73,4 @@ EXPOSE 8000
 # ===============================
 # Start server
 # ===============================
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1"]
+CMD ["python", "start.py"]
