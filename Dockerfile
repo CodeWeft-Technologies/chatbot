@@ -48,5 +48,10 @@ COPY . .
 # ---------- Expose port ----------
 EXPOSE 8000
 
+# ---------- Create entrypoint script ----------
+RUN echo '#!/bin/sh' > /app/entrypoint.sh && \
+    echo 'exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1' >> /app/entrypoint.sh && \
+    chmod +x /app/entrypoint.sh
+
 # ---------- Start server ----------
-CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1
+ENTRYPOINT ["/app/entrypoint.sh"]
