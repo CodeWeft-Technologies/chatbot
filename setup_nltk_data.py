@@ -16,6 +16,7 @@ else:
 packages_to_download = [
     'averaged_perceptron_tagger',
     'punkt',
+    'punkt_tab',
     'wordnet',
     'omw-1.4',
 ]

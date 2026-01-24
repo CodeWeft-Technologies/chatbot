@@ -4,7 +4,7 @@
 FROM python:3.11-slim
 
 # ===============================
-# System dependencies (CRITICAL for unstructured hi_res)
+# System dependencies (CRITICAL for unstructured hi_res + Playwright)
 # ===============================
 RUN apt-get update && apt-get install -y \
     poppler-utils \
@@ -24,10 +24,15 @@ RUN apt-get update && apt-get install -y \
     fonts-liberation \
     fonts-noto-core \
     fonts-noto-mono \
+    fonts-noto-mono \
     git \
     curl \
     wget \
     xdg-utils \
+    ca-certificates \
+    libharfbuzz0b \
+    libpango-1.0-0 \
+    libpangoft2-1.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 # ===============================
@@ -48,6 +53,12 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt
+
+# ===============================
+# Install Playwright browsers
+# ===============================
+RUN python -m playwright install chromium \
+    && python -m playwright install-deps chromium
 
 # ===============================
 # Download NLTK data at build time
