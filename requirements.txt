@@ -8,7 +8,7 @@ numpy==1.26.4
 
 llama-index==0.13.0
 llama-index-vector-stores-supabase==0.4.1
-langchain-core==0.1.52
+langchain-core>=0.3.72
 
 supabase==2.5.0
 
