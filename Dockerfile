@@ -61,11 +61,6 @@ RUN python setup_nltk_data.py
 COPY . .
 
 # ===============================
-# Make start script executable
-# ===============================
-RUN chmod +x start.py
-
-# ===============================
 # Expose port (Railway ignores but good practice)
 # ===============================
 EXPOSE 8000
