@@ -5,7 +5,7 @@ from typing import List
 from app.services.enhanced_rag import chunk_text, embed_text, store_embedding, process_multimodal_file
 from app.config import settings
 from app.db import normalize_org_id
-from starlette.responses import Response
+from starlette.responses import Response, JSONResponse
 
 
 class IngestBody(BaseModel):
@@ -384,11 +384,14 @@ async def ingest_file(
         
         logger.info(f"[INGEST-FILE] Created job {job_id} for {file.filename}")
         
-        return {
-            "job_id": str(job_id),
-            "status": "queued",
-            "message": "File queued for processing"
-        }, 202
+        return JSONResponse(
+            status_code=202,
+            content={
+                "job_id": str(job_id),
+                "status": "queued",
+                "message": "File queued for processing"
+            }
+        )
     
     except Exception as e:
         logger.error(f"[INGEST-FILE] Failed to queue job: {e}", exc_info=True)

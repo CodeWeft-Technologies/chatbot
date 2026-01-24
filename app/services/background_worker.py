@@ -38,7 +38,7 @@ async def process_pending_jobs():
             with conn.cursor() as cur:
                 # Get next pending job
                 cur.execute("""
-                    SELECT id, org_id, bot_id, filename, file_size, created_by
+                    SELECT id, org_id, bot_id, filename, file_size
                     FROM ingest_jobs
                     WHERE status = 'pending'
                     ORDER BY created_at ASC
@@ -47,9 +47,10 @@ async def process_pending_jobs():
                 
                 job = cur.fetchone()
                 if not job:
+                    logger.debug("[WORKER] No pending jobs found")
                     return  # No pending jobs
                 
-                job_id, org_id, bot_id, filename, file_size, created_by = job
+                job_id, org_id, bot_id, filename, file_size = job
                 
                 # Mark as processing
                 cur.execute("""
@@ -59,17 +60,17 @@ async def process_pending_jobs():
                 """, (job_id,))
                 conn.commit()
                 
-                logger.info(f"[WORKER] Processing job {job_id}: {filename}")
+                logger.info(f"[WORKER] Found pending job {job_id}: {filename}")
         
         # Process the job (outside transaction)
-        await _process_job(job_id, org_id, bot_id, filename, file_size, created_by)
+        await _process_job(job_id, org_id, bot_id, filename, file_size)
     
     except Exception as e:
         logger.error(f"[WORKER] Error processing pending jobs: {e}")
 
 
 async def _process_job(job_id: str, org_id: str, bot_id: str, filename: str, 
-                       file_size: int, created_by: str):
+                       file_size: int):
     """Process a single ingestion job - actual file processing."""
     try:
         logger.info(f"[WORKER-{job_id}] Starting file processing: {filename}")
