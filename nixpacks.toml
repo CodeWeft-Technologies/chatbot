@@ -1,2 +1,10 @@
 [phases.setup]
-nixPkgs = ["poppler", "tesseract"]
+aptPkgs = [
+  "poppler-utils",
+  "tesseract-ocr"
+]
+
+[phases.build]
+cmds = [
+  "python setup_nltk_data.py"
+]
