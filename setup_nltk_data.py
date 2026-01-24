@@ -2,6 +2,7 @@
 """Download required NLTK data for unstructured library."""
 import nltk
 import ssl
+import sys
 
 # Disable SSL verification for NLTK downloads if needed
 try:
@@ -14,7 +15,6 @@ else:
 # Download required NLTK packages
 packages_to_download = [
     'averaged_perceptron_tagger',
-    'averaged_perceptron_tagger_eng',
     'punkt',
     'wordnet',
     'omw-1.4',
@@ -26,6 +26,6 @@ for package in packages_to_download:
         nltk.download(package, quiet=True)
         print(f"✅ {package}")
     except Exception as e:
-        print(f"⚠️  {package}: {e}")
+        print(f"⚠️  {package}: {e}", file=sys.stderr)
 
 print("\n✅ NLTK data setup complete!")
