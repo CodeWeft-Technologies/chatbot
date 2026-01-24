@@ -21,10 +21,12 @@ RUN apt-get update && apt-get install -y \
     libcups2 \
     libdrm2 \
     libxkbcommon0 \
+    libxdamage1 \
+    libasound2 \
     fonts-liberation \
     fonts-noto-core \
     fonts-noto-mono \
-    fonts-noto-mono \
+    fonts-unifont \
     git \
     curl \
     wget \
@@ -57,8 +59,7 @@ RUN pip install --upgrade pip \
 # ===============================
 # Install Playwright browsers
 # ===============================
-RUN python -m playwright install chromium \
-    && python -m playwright install-deps chromium
+RUN python -m playwright install chromium
 
 # ===============================
 # Download NLTK data at build time
