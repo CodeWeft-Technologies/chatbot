@@ -108,6 +108,7 @@ def _create_ingest_jobs_schema():
                         bot_id UUID NOT NULL,
                         filename TEXT NOT NULL,
                         file_size BIGINT NOT NULL,
+                        file_content BYTEA,
                         status TEXT NOT NULL DEFAULT 'pending',
                         progress INT DEFAULT 0,
                         created_at TIMESTAMP DEFAULT NOW(),
@@ -131,6 +132,11 @@ def _create_ingest_jobs_schema():
                 cur.execute("""
                     CREATE INDEX IF NOT EXISTS idx_ingest_jobs_created_at 
                     ON ingest_jobs(created_at DESC);
+                """)
+                
+                # Add file_content column if it doesn't exist (for existing databases)
+                cur.execute("""
+                    ALTER TABLE ingest_jobs ADD COLUMN IF NOT EXISTS file_content BYTEA;
                 """)
                 
                 logger.info("[STARTUP] ✅ ingest_jobs table ready")
