@@ -69,6 +69,7 @@ class DocumentType(Enum):
     PDF = "pdf"
     DOCX = "docx"
     PPTX = "pptx"
+    XLSX = "xlsx"
     CSV = "csv"
     TXT = "txt"
     IMAGE = "image"
@@ -94,6 +95,8 @@ def detect_file_type(filename: str, file_bytes: Optional[bytes] = None) -> Docum
         ".doc": DocumentType.DOCX,
         ".pptx": DocumentType.PPTX,
         ".ppt": DocumentType.PPTX,
+        ".xlsx": DocumentType.XLSX,
+        ".xls": DocumentType.XLSX,
         ".csv": DocumentType.CSV,
         ".txt": DocumentType.TXT,
         ".png": DocumentType.IMAGE,
@@ -158,6 +161,8 @@ async def extract_elements_from_file(
             return await _extract_docx(file_bytes)
         elif doc_type == DocumentType.PPTX:
             return await _extract_pptx(file_bytes)
+        elif doc_type == DocumentType.XLSX:
+            return await _extract_xlsx(file_bytes)
         elif doc_type == DocumentType.CSV:
             return await _extract_csv(file_bytes)
         elif doc_type == DocumentType.IMAGE:
@@ -254,6 +259,26 @@ async def _extract_pptx(file_bytes: bytes) -> List[Any]:
     
     except Exception as e:
         logger.error(f"[EXTRACT-PPTX] Error: {e}")
+        raise
+
+
+async def _extract_xlsx(file_bytes: bytes) -> List[Any]:
+    """Extract XLSX elements using unstructured"""
+    try:
+        from unstructured.partition.xlsx import partition_xlsx
+        
+        temp_path = f"/tmp/{hashlib.md5(file_bytes).hexdigest()}.xlsx"
+        os.makedirs("/tmp", exist_ok=True)
+        
+        with open(temp_path, "wb") as f:
+            f.write(file_bytes)
+        
+        elements = partition_xlsx(filename=temp_path)
+        logger.info(f"[EXTRACT] XLSX: {len(elements)} elements")
+        return elements
+    
+    except Exception as e:
+        logger.error(f"[EXTRACT-XLSX] Error: {e}")
         raise
 
 

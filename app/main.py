@@ -143,13 +143,13 @@ def _update_vector_dimensions():
 
 
 def _install_playwright_browsers():
-    """Install Playwright Chromium at server startup"""
+    """Install Playwright Chromium at server startup."""
     import subprocess
     logger.info("[STARTUP] Installing Playwright Chromium browsers...")
     try:
-        # Install with system dependencies
+        # Dependencies are already in the image; avoid --with-deps to prevent apt failures
         result = subprocess.run(
-            [sys.executable, "-m", "playwright", "install", "--with-deps", "chromium"],
+            [sys.executable, "-m", "playwright", "install", "chromium"],
             capture_output=True,
             timeout=300,  # 5 minute timeout
             check=False  # Don't raise on non-zero exit
