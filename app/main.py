@@ -68,6 +68,12 @@ async def startup_event():
     """Initialize server: install Playwright, create indexes, setup schema"""
     logger.info("[STARTUP] Starting up chatbot service...")
     
+    # Create ingest_jobs table for background processing
+    try:
+        _create_ingest_jobs_schema()
+    except Exception as e:
+        logger.warning(f"[STARTUP] Ingest jobs schema creation failed: {e}")
+    
     # Update vector dimensions if needed (OpenAI embeddings use 1536)
     try:
         _update_vector_dimensions()
@@ -87,6 +93,50 @@ async def startup_event():
         logger.warning(f"[STARTUP] Failed to create vector indexes: {e}")
     
     logger.info("[STARTUP] Startup complete")
+
+
+def _create_ingest_jobs_schema():
+    """Create ingest_jobs table for background file processing queue"""
+    logger.info("[STARTUP] Ensuring ingest_jobs table exists...")
+    try:
+        with psycopg.connect(settings.SUPABASE_DB_DSN, autocommit=True) as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS ingest_jobs (
+                        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        org_id UUID NOT NULL,
+                        bot_id UUID NOT NULL,
+                        filename TEXT NOT NULL,
+                        file_size BIGINT NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'pending',
+                        progress INT DEFAULT 0,
+                        created_at TIMESTAMP DEFAULT NOW(),
+                        started_at TIMESTAMP,
+                        completed_at TIMESTAMP,
+                        error_message TEXT,
+                        documents_count INT DEFAULT 0,
+                        created_by UUID NOT NULL
+                    );
+                """)
+                
+                # Create indexes for efficient querying
+                cur.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_ingest_jobs_status 
+                    ON ingest_jobs(status);
+                """)
+                cur.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_ingest_jobs_org_bot 
+                    ON ingest_jobs(org_id, bot_id);
+                """)
+                cur.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_ingest_jobs_created_at 
+                    ON ingest_jobs(created_at DESC);
+                """)
+                
+                logger.info("[STARTUP] ✅ ingest_jobs table ready")
+    except Exception as e:
+        logger.error(f"[STARTUP] Failed to create ingest_jobs table: {e}")
+        raise
 
 
 def _update_vector_dimensions():
@@ -1098,6 +1148,22 @@ def _init_schema():
 @app.on_event("startup")
 def on_startup():
     _init_schema()
+    
+    # Start background worker for ingestion jobs
+    import threading
+    def run_background_worker():
+        """Run the background worker in a separate thread"""
+        logger.info("[STARTUP] Starting background worker thread...")
+        try:
+            from app.services.background_worker import start_background_worker
+            asyncio.run(start_background_worker())
+        except Exception as e:
+            logger.error(f"[STARTUP] Background worker failed: {e}")
+    
+    worker_thread = threading.Thread(target=run_background_worker, daemon=True)
+    worker_thread.start()
+    logger.info("[STARTUP] Background worker thread started")
+    
     # Schedule periodic cleanup of old conversations
     import threading
     def cleanup_conversations():

@@ -538,3 +538,40 @@ def message_usage_bot(org_id: str, bot_id: str, days: int = 30, authorization: O
         return stats
     finally:
         conn.close()
+
+# ===== INGESTION JOB TRACKING =====
+
+@router.get("/ingest/jobs/status/{job_id}")
+async def get_ingest_job_status(job_id: str, authorization: Optional[str] = Header(default=None)):
+    """Get status of a file ingestion job"""
+    from app.services.background_worker import get_job_status
+    from uuid import UUID
+    
+    try:
+        job_uuid = UUID(job_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid job ID format")
+    
+    status = await get_job_status(job_uuid)
+    if not status:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    return status
+
+
+@router.get("/ingest/jobs/{org_id}")
+def list_ingest_jobs(org_id: str, authorization: Optional[str] = Header(default=None)):
+    """Get recent ingestion jobs for an organization"""
+    from app.services.background_worker import get_user_jobs
+    from uuid import UUID
+    import asyncio
+    
+    _require_auth(authorization, org_id)
+    
+    try:
+        org_uuid = UUID(org_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid org ID format")
+    
+    jobs = asyncio.run(get_user_jobs(org_uuid))
+    return {"jobs": jobs}
