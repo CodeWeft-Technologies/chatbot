@@ -13,6 +13,16 @@ RUN apt-get update && apt-get install -y \
     git \
     curl \
     wget \
+    fonts-liberation \
+    fonts-noto-core \
+    fonts-noto-mono \
+    xdg-utils \
+    libnss3 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libxkbcommon0 \
     && rm -rf /var/lib/apt/lists/*
 
 # ---------- Environment ----------
@@ -27,9 +37,6 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --upgrade pip \
     && pip install -r requirements.txt
-
-# ---------- Playwright ----------
-RUN playwright install --with-deps chromium
 
 # ---------- NLTK data ----------
 COPY setup_nltk_data.py .
