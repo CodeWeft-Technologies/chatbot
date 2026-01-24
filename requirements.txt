@@ -36,7 +36,6 @@ httpx
 
 # 🎯 Multimodal RAG Processing
 unstructured[all-docs]==0.13.7
-unstructured-inference==0.8.1
 pdfminer.six==20221105
 pdfplumber==0.8.0
 python-docx==0.8.11
