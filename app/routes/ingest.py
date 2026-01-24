@@ -305,43 +305,18 @@ async def ingest_file(
     authorization: Optional[str] = Header(default=None),
 ):
     """
-    Universal file ingestion endpoint for multimodal RAG.
+    Queue file for background ingestion (non-blocking).
     
-    Supports:
-    - PDF (text-based and scanned)
-    - DOCX, PPTX
-    - CSV, TXT
-    - Images (PNG, JPG, GIF, WEBP)
-    
-    Automatic features:
-    - File type detection
-    - OCR for scanned documents/images
-    - Title-based chunking
-    - Deduplication
-    - Metadata extraction
-    
-    Request:
-        - bot_id: Bot identifier (URL path)
-        - org_id: Organization ID (form field)
-        - file: File to ingest (form file)
-        - x_bot_key: Optional API key (header) - if not provided, uses bearer token
-        - authorization: Bearer token (header) - fallback if x_bot_key not provided
-    
-    Response:
-        {
-            "inserted": int,              # Number of chunks successfully inserted
-            "skipped_duplicates": int,    # Number of duplicate chunks skipped
-            "total_chunks": int,          # Total chunks extracted
-            "file_type": str,             # Detected file type
-            "file_name": str,             # Original filename
-        }
+    Returns immediately with job_id for progress tracking.
     """
     from app.db import get_conn
     import logging
+    from uuid import uuid4
+    import psycopg
     
     logger = logging.getLogger(__name__)
     
-    logger.info(f"[INGEST-FILE] Starting file ingest: {file.filename} for bot {bot_id}")
+    logger.info(f"[INGEST-FILE] Queuing file: {file.filename} for bot {bot_id}")
     
     # ===== Authentication =====
     conn = get_conn()
@@ -368,54 +343,53 @@ async def ingest_file(
     # ===== Rate limiting =====
     _rate_limit(bot_id, org_id)
     
-    # ===== Concurrency control =====
-    if not _INGEST_LOCK.acquire(blocking=False):
-        raise HTTPException(status_code=429, detail="Another ingest is running; please wait")
+    # Read file bytes
+    file_bytes = await file.read()
     
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Empty file")
+    
+    logger.info(f"[INGEST-FILE] Read {len(file_bytes)} bytes from {file.filename}")
+    
+    # ===== Create ingest job =====
     try:
-        # Read file bytes
-        file_bytes = await file.read()
+        job_id = uuid4()
+        normalized_org = normalize_org_id(org_id)
         
-        if not file_bytes:
-            raise HTTPException(status_code=400, detail="Empty file")
+        with psycopg.connect(settings.SUPABASE_DB_DSN) as conn:
+            with conn.cursor() as cur:
+                # Insert job record
+                cur.execute("""
+                    INSERT INTO ingest_jobs 
+                    (id, org_id, bot_id, filename, file_size, file_content, status, progress, created_by)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                """, (
+                    str(job_id),
+                    normalized_org,
+                    bot_id,
+                    file.filename,
+                    len(file_bytes),
+                    file_bytes,  # Store file bytes for background worker to process
+                    "pending",
+                    0,
+                    "api_upload"
+                ))
+                result = cur.fetchone()
+                conn.commit()
         
-        logger.info(f"[INGEST-FILE] Read {len(file_bytes)} bytes from {file.filename}")
+        logger.info(f"[INGEST-FILE] Created job {job_id} for {file.filename}")
         
-        # Process multimodal file
-        try:
-            inserted, skipped = await process_multimodal_file(
-                filename=file.filename,
-                file_bytes=file_bytes,
-                org_id=org_id,
-                bot_id=bot_id,
-            )
-        except Exception as e:
-            logger.error(f"[INGEST-FILE] Processing failed: {e}", exc_info=True)
-            raise HTTPException(status_code=400, detail=f"File processing failed: {str(e)}")
-        
-        finally:
-            # Unload embedding model to free memory
-            from app.services.enhanced_rag import unload_model
-            logger.info(f"[INGEST-FILE] Calling unload_model()...")
-            unload_model()
-        
-        # Detect file type for response
-        from app.services.multimodal_processor import detect_file_type
-        doc_type = detect_file_type(file.filename, file_bytes)
-        
-        response = {
-            "inserted": inserted,
-            "skipped_duplicates": skipped,
-            "total_chunks": inserted + skipped,
-            "file_type": doc_type.value,
-            "file_name": file.filename,
-        }
-        
-        logger.info(f"[INGEST-FILE] Success: {response}")
-        return response
+        return {
+            "job_id": str(job_id),
+            "status": "queued",
+            "message": "File queued for processing"
+        }, 202
     
-    finally:
-        _INGEST_LOCK.release()
+    except Exception as e:
+        logger.error(f"[INGEST-FILE] Failed to queue job: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to queue file: {str(e)}")
+
 
 
 @router.options("/ingest/file/{bot_id}")

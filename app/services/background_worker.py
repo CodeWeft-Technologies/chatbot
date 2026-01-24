@@ -68,24 +68,45 @@ async def process_pending_jobs():
         logger.error(f"[WORKER] Error processing pending jobs: {e}")
 
 
-async def _process_job(job_id: UUID, org_id: UUID, bot_id: UUID, filename: str, 
-                       file_size: int, created_by: UUID):
-    """Process a single ingestion job."""
+async def _process_job(job_id: str, org_id: str, bot_id: str, filename: str, 
+                       file_size: int, created_by: str):
+    """Process a single ingestion job - actual file processing."""
     try:
-        # Fetch the file bytes from storage (you'll need to implement this)
-        # For now, assuming file is available via enhanced_rag service
+        logger.info(f"[WORKER-{job_id}] Starting file processing: {filename}")
         
-        logger.info(f"[WORKER-{job_id}] Starting processing: {filename}")
-        
-        # Simulate progress updates (you would integrate this into the actual processing)
+        # Fetch file bytes from database
         with psycopg.connect(settings.SUPABASE_DB_DSN) as conn:
             with conn.cursor() as cur:
-                cur.execute("""
-                    UPDATE ingest_jobs SET progress = 50 WHERE id = %s
-                """, (job_id,))
+                cur.execute("SELECT file_content FROM ingest_jobs WHERE id = %s", (job_id,))
+                row = cur.fetchone()
+                if not row:
+                    raise Exception(f"Job {job_id} not found in database")
+                file_bytes = row[0]
+        
+        logger.info(f"[WORKER-{job_id}] Retrieved {len(file_bytes)} bytes for processing")
+        
+        # Update progress: extracting
+        with psycopg.connect(settings.SUPABASE_DB_DSN) as conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE ingest_jobs SET progress = 20 WHERE id = %s", (job_id,))
                 conn.commit()
         
-        logger.info(f"[WORKER-{job_id}] ✅ Processing completed")
+        # Process multimodal file
+        logger.info(f"[WORKER-{job_id}] Calling process_multimodal_file...")
+        inserted, skipped = await process_multimodal_file(
+            filename=filename,
+            file_bytes=file_bytes,
+            org_id=org_id,
+            bot_id=bot_id,
+        )
+        
+        # Update progress: embedding
+        with psycopg.connect(settings.SUPABASE_DB_DSN) as conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE ingest_jobs SET progress = 80 WHERE id = %s", (job_id,))
+                conn.commit()
+        
+        logger.info(f"[WORKER-{job_id}] ✅ Processing completed: {inserted} inserted, {skipped} skipped")
         
         # Mark as completed
         with psycopg.connect(settings.SUPABASE_DB_DSN) as conn:
@@ -95,13 +116,20 @@ async def _process_job(job_id: UUID, org_id: UUID, bot_id: UUID, filename: str,
                     SET status = 'completed', 
                         progress = 100, 
                         completed_at = NOW(),
-                        documents_count = 0
+                        documents_count = %s
                     WHERE id = %s
-                """, (job_id,))
+                """, (inserted, job_id))
                 conn.commit()
+        
+        # Unload model to free memory
+        try:
+            from app.services.enhanced_rag import unload_model
+            unload_model()
+        except Exception as e:
+            logger.warning(f"[WORKER-{job_id}] Failed to unload model: {e}")
     
     except Exception as e:
-        logger.error(f"[WORKER-{job_id}] ❌ Processing failed: {e}")
+        logger.error(f"[WORKER-{job_id}] ❌ Processing failed: {e}", exc_info=True)
         
         # Mark as failed
         with psycopg.connect(settings.SUPABASE_DB_DSN) as conn:
