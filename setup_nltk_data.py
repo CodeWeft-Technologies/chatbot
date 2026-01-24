@@ -15,6 +15,7 @@ else:
 # Download required NLTK packages
 packages_to_download = [
     'averaged_perceptron_tagger',
+    'averaged_perceptron_tagger_eng',
     'punkt',
     'punkt_tab',
     'wordnet',
