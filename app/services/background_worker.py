@@ -145,9 +145,12 @@ async def _process_job(job_id: str, org_id: str, bot_id: str, filename: str,
                 conn.commit()
 
 
-async def get_job_status(job_id: UUID) -> dict:
+async def get_job_status(job_id: UUID | str) -> dict:
     """Get the current status of an ingestion job."""
     try:
+        # Convert to string if UUID
+        job_id_str = str(job_id)
+        
         with psycopg.connect(settings.SUPABASE_DB_DSN) as conn:
             with conn.cursor() as cur:
                 cur.execute("""
@@ -155,7 +158,7 @@ async def get_job_status(job_id: UUID) -> dict:
                            started_at, completed_at, error_message, documents_count
                     FROM ingest_jobs
                     WHERE id = %s
-                """, (job_id,))
+                """, (job_id_str,))
                 
                 row = cur.fetchone()
                 if not row:

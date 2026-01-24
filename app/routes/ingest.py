@@ -526,14 +526,8 @@ def message_usage_bot(org_id: str, bot_id: str, days: int = 30, authorization: O
 async def get_ingest_job_status(job_id: str, authorization: Optional[str] = Header(default=None)):
     """Get status of a file ingestion job"""
     from app.services.background_worker import get_job_status
-    from uuid import UUID
     
-    try:
-        job_uuid = UUID(job_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid job ID format")
-    
-    status = await get_job_status(job_uuid)
+    status = await get_job_status(job_id)
     if not status:
         raise HTTPException(status_code=404, detail="Job not found")
     
