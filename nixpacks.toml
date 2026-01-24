@@ -1,0 +1,12 @@
+[phases.setup]
+aptPkgs = [
+  "poppler-utils",
+  "tesseract-ocr"
+]
+
+[phases.build]
+cmds = [
+  "pip install -r requirements.txt",
+  "python setup_nltk_data.py",
+  "which pdfinfo || echo 'WARNING: pdfinfo not found in PATH'"
+]

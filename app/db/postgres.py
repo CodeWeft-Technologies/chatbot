@@ -6,7 +6,7 @@ def get_conn():
     return psycopg.connect(settings.SUPABASE_DB_DSN, autocommit=True)
 
 
-def embed_search(conn, org_id, bot_id, query_vec, k=6):
+def embed_search(conn, org_id, bot_id, query_vec, k=4):
     from app.db import normalize_org_id, normalize_bot_id
     org_n = normalize_org_id(org_id)
     bot_n = normalize_bot_id(bot_id)
