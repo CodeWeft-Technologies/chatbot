@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from typing import List
 from app.services.enhanced_rag import chunk_text, embed_text, store_embedding, process_multimodal_file
 from app.config import settings
+from app.db import normalize_org_id
 from starlette.responses import Response
 
 
