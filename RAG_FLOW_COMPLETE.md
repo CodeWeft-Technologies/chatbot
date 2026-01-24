@@ -41,7 +41,7 @@
         ▼                         ▼              ▼
    Text only             Tables present      Images present
         │                         │              │
-        │                    GPT-4 Turbo    GPT-4 Vision
+        │                    gemini 2.5 rpro    gemini 2.5 pro
         │                    Summary         Analysis
         │                         │              │
         └────────────┬────────────┴──────────────┘

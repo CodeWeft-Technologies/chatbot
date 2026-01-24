@@ -333,10 +333,13 @@ async def ingest_file(
             except Exception:
                 public_api_key = None
         
-        if public_api_key:
-            if not x_bot_key or x_bot_key != public_api_key:
+        # If bot has a public API key, check for it first
+        # But if no key is provided, fall back to bearer token
+        if public_api_key and x_bot_key:
+            if x_bot_key != public_api_key:
                 raise HTTPException(status_code=403, detail="Invalid bot key")
         else:
+            # Use bearer token authentication
             _require_auth(authorization, org_id)
     finally:
         conn.close()
