@@ -2,8 +2,9 @@ from fastapi import APIRouter, HTTPException, Header, File, UploadFile, Form
 from typing import Optional
 from pydantic import BaseModel
 from typing import List
-from app.services.enhanced_rag import chunk_text, embed_text, store_embedding
+from app.services.enhanced_rag import chunk_text, embed_text, store_embedding, process_multimodal_file
 from app.config import settings
+from starlette.responses import Response
 
 
 class IngestBody(BaseModel):
@@ -294,10 +295,137 @@ async def ingest_pdf(
         _INGEST_LOCK.release()
     return {"inserted": inserted, "skipped_duplicates": skipped}
 
+
+@router.post("/ingest/file/{bot_id}")
+async def ingest_file(
+    bot_id: str,
+    org_id: str = Form(...),
+    file: UploadFile = File(...),
+    x_bot_key: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """
+    Universal file ingestion endpoint for multimodal RAG.
+    
+    Supports:
+    - PDF (text-based and scanned)
+    - DOCX, PPTX
+    - CSV, TXT
+    - Images (PNG, JPG, GIF, WEBP)
+    
+    Automatic features:
+    - File type detection
+    - OCR for scanned documents/images
+    - Title-based chunking
+    - Deduplication
+    - Metadata extraction
+    
+    Request:
+        - bot_id: Bot identifier (URL path)
+        - org_id: Organization ID (form field)
+        - file: File to ingest (form file)
+        - x_bot_key: Optional API key (header) - if not provided, uses bearer token
+        - authorization: Bearer token (header) - fallback if x_bot_key not provided
+    
+    Response:
+        {
+            "inserted": int,              # Number of chunks successfully inserted
+            "skipped_duplicates": int,    # Number of duplicate chunks skipped
+            "total_chunks": int,          # Total chunks extracted
+            "file_type": str,             # Detected file type
+            "file_name": str,             # Original filename
+        }
+    """
+    from app.db import get_conn
+    import logging
+    
+    logger = logging.getLogger(__name__)
+    
+    logger.info(f"[INGEST-FILE] Starting file ingest: {file.filename} for bot {bot_id}")
+    
+    # ===== Authentication =====
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            try:
+                cur.execute(
+                    "select public_api_key from chatbots where id=%s and org_id=%s",
+                    (bot_id, normalize_org_id(org_id)),
+                )
+                row = cur.fetchone()
+                public_api_key = row[0] if row else None
+            except Exception:
+                public_api_key = None
+        
+        if public_api_key:
+            if not x_bot_key or x_bot_key != public_api_key:
+                raise HTTPException(status_code=403, detail="Invalid bot key")
+        else:
+            _require_auth(authorization, org_id)
+    finally:
+        conn.close()
+    
+    # ===== Rate limiting =====
+    _rate_limit(bot_id, org_id)
+    
+    # ===== Concurrency control =====
+    if not _INGEST_LOCK.acquire(blocking=False):
+        raise HTTPException(status_code=429, detail="Another ingest is running; please wait")
+    
+    try:
+        # Read file bytes
+        file_bytes = await file.read()
+        
+        if not file_bytes:
+            raise HTTPException(status_code=400, detail="Empty file")
+        
+        logger.info(f"[INGEST-FILE] Read {len(file_bytes)} bytes from {file.filename}")
+        
+        # Process multimodal file
+        try:
+            inserted, skipped = await process_multimodal_file(
+                filename=file.filename,
+                file_bytes=file_bytes,
+                org_id=org_id,
+                bot_id=bot_id,
+            )
+        except Exception as e:
+            logger.error(f"[INGEST-FILE] Processing failed: {e}", exc_info=True)
+            raise HTTPException(status_code=400, detail=f"File processing failed: {str(e)}")
+        
+        finally:
+            # Unload embedding model to free memory
+            from app.services.enhanced_rag import unload_model
+            logger.info(f"[INGEST-FILE] Calling unload_model()...")
+            unload_model()
+        
+        # Detect file type for response
+        from app.services.multimodal_processor import detect_file_type
+        doc_type = detect_file_type(file.filename, file_bytes)
+        
+        response = {
+            "inserted": inserted,
+            "skipped_duplicates": skipped,
+            "total_chunks": inserted + skipped,
+            "file_type": doc_type.value,
+            "file_name": file.filename,
+        }
+        
+        logger.info(f"[INGEST-FILE] Success: {response}")
+        return response
+    
+    finally:
+        _INGEST_LOCK.release()
+
+
+@router.options("/ingest/file/{bot_id}")
+async def ingest_file_options(bot_id: str):
+    """CORS preflight for file ingest endpoint"""
+    return Response(status_code=204)
+
 @router.options("/ingest/pdf/{bot_id}")
 async def ingest_pdf_options(bot_id: str):
     return Response(status_code=204)
-from starlette.responses import Response
 
 @router.options("/ingest/{bot_id}")
 def ingest_options(bot_id: str):

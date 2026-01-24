@@ -1,0 +1,21 @@
+# New dependencies for multimodal RAG support
+# Add these to your existing requirements.txt
+
+# Document parsing
+unstructured[all-docs]==0.12.1  # Core multimodal document parsing
+python-docx==0.8.11             # DOCX support
+python-pptx==0.6.21             # PPTX support
+pdf2image==1.16.3               # PDF to image conversion
+
+# OCR engines (choose one or both)
+paddleocr==2.7.0.2              # PaddleOCR - more accurate, supports 80+ languages
+pytesseract==0.3.10             # Tesseract OCR - lightweight fallback
+Pillow==10.0.0                  # Image processing
+
+# Optional: For better PDF handling
+PyMuPDF==1.23.8                 # fitz - PDF to image conversion
+pypdf==3.17.0                   # Already likely present
+
+# Optional: For vision-based image understanding
+# Requires OPENAI_API_KEY set
+# Uses existing OpenAI client already in requirements

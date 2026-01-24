@@ -48,6 +48,124 @@ def unload_model():
     pass
 
 
+# ============================================================================
+# MULTIMODAL RAG HELPERS
+# ============================================================================
+
+async def process_multimodal_file(
+    filename: str,
+    file_bytes: bytes,
+    org_id: str,
+    bot_id: str,
+    skip_duplicate_check: bool = False,
+) -> Tuple[int, int]:
+    """
+    Process a multimodal file and ingest all extracted chunks using Unstructured.
+    
+    Pipeline:
+    1. Extract elements using unstructured library
+    2. Create intelligent chunks (title-based semantic boundaries)
+    3. Convert to LangChain Documents with rich metadata
+    4. Embed and store in database
+    5. Handle deduplication at file and content levels
+    
+    Args:
+        filename: Original filename
+        file_bytes: File contents
+        org_id: Organization ID
+        bot_id: Bot ID
+        skip_duplicate_check: Skip duplicate checking for bulk operations
+    
+    Returns:
+        Tuple of (inserted_count, skipped_count)
+    """
+    from app.services.multimodal_processor_v2 import (
+        process_multimodal_file as process_file_pipeline,
+        compute_file_hash,
+    )
+    
+    logger.info(f"[RAG-INGEST] Processing: {filename}")
+    
+    # Check file-level deduplication
+    file_hash = compute_file_hash(file_bytes)
+    if not skip_duplicate_check and _is_duplicate_file(org_id, bot_id, file_hash):
+        logger.info(f"[RAG-INGEST] Skipping duplicate file: {filename}")
+        return 0, 0
+    
+    try:
+        # Step 1-3: Extract → Chunk → Convert to LangChain Documents
+        documents, metadata = await process_file_pipeline(filename, file_bytes)
+        
+        if not documents:
+            logger.warning(f"[RAG-INGEST] No documents extracted from {filename}")
+            return 0, 0
+        
+        logger.info(f"[RAG-INGEST] Extracted {len(documents)} documents from {filename}")
+        
+        # Step 4: Embed and store each document
+        inserted = 0
+        skipped = 0
+        
+        for idx, doc in enumerate(documents):
+            try:
+                # Embed document content
+                embedding = embed_text(doc.page_content)
+                
+                # Merge metadata with document metadata
+                full_metadata = {
+                    **doc.metadata,
+                    "extraction_method": f"unstructured_{metadata['content_type']}",
+                    "document_index": idx,
+                }
+                
+                # Store embedding
+                stored = store_embedding(
+                    org_id,
+                    bot_id,
+                    doc.page_content,
+                    embedding,
+                    metadata=full_metadata,
+                    skip_duplicate_check=skip_duplicate_check,
+                )
+                
+                if stored:
+                    inserted += 1
+                else:
+                    skipped += 1
+            
+            except Exception as e:
+                logger.error(f"[RAG-INGEST] Error storing document {idx}: {e}")
+                continue
+        
+        logger.info(f"[RAG-INGEST] ✅ {filename}: {inserted} inserted, {skipped} skipped")
+        return inserted, skipped
+    
+    except Exception as e:
+        logger.error(f"[RAG-INGEST] Pipeline failed for {filename}: {e}")
+        raise
+
+
+def _is_duplicate_file(org_id: str, bot_id: str, file_hash: str) -> bool:
+    """Check if file has already been ingested"""
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT 1 FROM rag_embeddings 
+                    WHERE org_id = %s 
+                      AND bot_id = %s 
+                      AND metadata->>'file_hash' = %s
+                    LIMIT 1
+                    """,
+                    (normalize_org_id(org_id), normalize_bot_id(bot_id), file_hash),
+                )
+                return cur.fetchone() is not None
+    except Exception as e:
+        logger.warning(f"File hash check failed: {e}")
+        return False
+
+
 def check_and_unload_if_idle():
     """No-op for API-based embeddings (kept for backward compatibility)"""
     return False
