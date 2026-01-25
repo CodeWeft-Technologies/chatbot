@@ -508,6 +508,9 @@ def create_ai_enhanced_summary(
     """
     Create AI-enhanced summary for chunks with images/tables using Gemini Vision.
     
+    COST OPTIMIZATION: Only called for chunks with tables/images.
+    Plain text chunks skip this entirely.
+    
     Args:
         text: Text content
         tables: List of table HTML
@@ -516,6 +519,16 @@ def create_ai_enhanced_summary(
     Returns:
         Enhanced summary optimized for search and retrieval
     """
+    # Check if AI summaries are disabled (set DISABLE_GEMINI_SUMMARIES=true to save costs)
+    if os.getenv("DISABLE_GEMINI_SUMMARIES", "false").lower() == "true":
+        logger.info("[SUMMARY] ⚠️ AI summaries disabled (DISABLE_GEMINI_SUMMARIES=true) - using original text")
+        summary = text
+        if tables:
+            summary += f"\n\n[Contains {len(tables)} table(s)]"
+        if images:
+            summary += f"\n[Contains {len(images)} image(s)]"
+        return summary
+    
     try:
         model = _get_gemini_model()
         if not model:
@@ -614,40 +627,41 @@ def create_langchain_documents(
         base64_image = standalone_image_meta.get('base64_image')
         image_format = standalone_image_meta.get('image_format', 'jpg')
         
-        try:
-            logger.info("[LANGCHAIN] Summarizing image with Gemini...")
-            model = _get_gemini_model()
-            if not model:
-                raise RuntimeError("Gemini model not available")
+        # Check if Gemini summaries are disabled
+        if os.getenv("DISABLE_GEMINI_SUMMARIES", "false").lower() == "true":
+            logger.info("[LANGCHAIN] ⚠️ Gemini summaries disabled - using generic image description")
+            enhanced_content = f"[Image file: {source_file}]\nThis is an image document. Enable DISABLE_GEMINI_SUMMARIES=false to generate AI descriptions."
+        else:
+            try:
+                logger.info("[LANGCHAIN] Summarizing image with Gemini...")
+                model = _get_gemini_model()
+                if not model:
+                    raise RuntimeError("Gemini model not available")
 
-            response = model.generate_content(
-                [
-                    "Provide a comprehensive, detailed description of this image that would be useful for search and retrieval. Include: main subjects, visible text, layout, colors, any diagrams or charts, and key details.",
-                    {
-                        "inline_data": {
-                            "mime_type": f"image/{image_format}",
-                            "data": base64_image,
-                        }
-                    },
-                ],
-                generation_config={"max_output_tokens": 1000},
-                safety_settings=[
-                    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-                    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-                    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-                    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-                ],
-            )
+                response = model.generate_content(
+                    [
+                        "Provide a comprehensive, detailed description of this image that would be useful for search and retrieval. Include: main subjects, visible text, layout, colors, any diagrams or charts, and key details.",
+                        {
+                            "inline_data": {
+                                "mime_type": f"image/{image_format}",
+                                "data": base64_image,
+                            }
+                        },
+                    ],
+                    generation_config={"max_output_tokens": 1000},
+                    safety_settings=[
+                        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+                    ],
+                )
 
-            enhanced_content = response.text
-            logger.info(f"[LANGCHAIN] Gemini generated {len(enhanced_content)} char summary for image")
-            
-            # Create single LangChain document for standalone image
-            metadata = {
-                "source_file": source_file,
-                "file_hash": file_hash,
-                "content_type": content_type,
-                "chunk_id": 0,
+                enhanced_content = response.text
+                logger.info(f"[LANGCHAIN] Gemini generated {len(enhanced_content)} char summary for image")
+            except Exception as e:
+                logger.warning(f"[LANGCHAIN] Failed to get Gemini summary: {e}")
+                enhanced_content = f"[Image: {source_file}] (AI summary unavailable)"
                 "is_standalone_image": True,
                 "image_format": image_format,
                 "dimensions": standalone_image_meta.get('dimensions', 'unknown'),
@@ -752,6 +766,13 @@ async def process_multimodal_file(
     """
     Complete pipeline: Extract → Chunk → Convert to LangChain Documents
     
+    COST OPTIMIZATION:
+    - Plain text chunks: NO API calls (free)
+    - Chunks with tables/images: Gemini summary (can be disabled)
+    - Standalone images: Gemini analysis (can be disabled)
+    
+    Set DISABLE_GEMINI_SUMMARIES=true to save costs (skip AI summaries)
+    
     Args:
         filename: Original filename
         file_bytes: File contents
@@ -760,6 +781,15 @@ async def process_multimodal_file(
         Tuple of (documents, metadata)
     """
     logger.info(f"[PIPELINE] Starting multimodal processing for {filename}")
+    
+    # Log cost configuration
+    disable_gemini = os.getenv("DISABLE_GEMINI_SUMMARIES", "false").lower() == "true"
+    if disable_gemini:
+        logger.warning(f"[PIPELINE] 💰 Cost optimization: Gemini AI summaries DISABLED (DISABLE_GEMINI_SUMMARIES=true)")
+        logger.warning(f"[PIPELINE]    Text content: Used as-is (no API calls)")
+        logger.warning(f"[PIPELINE]    Tables/Images: Not analyzed by AI")
+    else:
+        logger.info(f"[PIPELINE] ✓ Gemini AI summaries enabled for chunks with tables/images")
     
     try:
         # Step 1: Detect file type
