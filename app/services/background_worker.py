@@ -22,19 +22,63 @@ async def start_background_worker():
     # Give the main app a moment to initialize
     await asyncio.sleep(2)
     
+    # Create a task to process jobs concurrently
+    process_task = asyncio.create_task(process_jobs_concurrently())
+    
+    try:
+        await process_task
+    except Exception as e:
+        print(f"[WORKER] ❌ Worker crashed: {e}")
+        logger.error(f"[WORKER] ❌ Worker crashed: {e}", exc_info=True)
+
+
+async def process_jobs_concurrently():
+    """Process multiple jobs concurrently with a max limit."""
+    MAX_CONCURRENT_JOBS = 3  # Process up to 3 jobs simultaneously
+    active_tasks = set()
+    
     while True:
         try:
-            await process_pending_jobs()
-        except Exception as e:
-            print(f"[WORKER] ❌ Error in main loop: {e}")
-            logger.error(f"[WORKER] ❌ Error in main loop: {e}")
+            # Check for pending jobs and start new tasks if slots available
+            while len(active_tasks) < MAX_CONCURRENT_JOBS:
+                job = _get_next_pending_job()
+                if not job:
+                    break  # No more pending jobs
+                
+                job_id = job[0]
+                # Create task for this job
+                task = asyncio.create_task(_process_job_wrapper(job))
+                active_tasks.add(task)
+                
+                # Clean up completed tasks
+                done = [t for t in active_tasks if t.done()]
+                for t in done:
+                    active_tasks.discard(t)
+                    try:
+                        await t  # Get any exceptions
+                    except Exception as e:
+                        logger.error(f"[WORKER] Task error: {e}")
+            
+            # Wait a bit before checking for new jobs
+            await asyncio.sleep(2)
+            
+            # Clean up completed tasks
+            done = [t for t in active_tasks if t.done()]
+            for t in done:
+                active_tasks.discard(t)
+                try:
+                    await t
+                except Exception as e:
+                    logger.error(f"[WORKER] Task error: {e}")
         
-        # Poll every 2 seconds
-        await asyncio.sleep(2)
+        except Exception as e:
+            print(f"[WORKER] ❌ Error in concurrent processor: {e}")
+            logger.error(f"[WORKER] ❌ Error in concurrent processor: {e}")
+            await asyncio.sleep(2)
 
 
-async def process_pending_jobs():
-    """Poll database for pending jobs and process them."""
+def _get_next_pending_job():
+    """Get the next pending job without starting async processing."""
     try:
         with psycopg.connect(settings.SUPABASE_DB_DSN) as conn:
             with conn.cursor() as cur:
@@ -45,12 +89,12 @@ async def process_pending_jobs():
                     WHERE status = 'pending'
                     ORDER BY created_at ASC
                     LIMIT 1
+                    FOR UPDATE SKIP LOCKED
                 """)
                 
                 job = cur.fetchone()
                 if not job:
-                    # Silently return if no jobs
-                    return  # No pending jobs
+                    return None
                 
                 job_id, org_id, bot_id, filename, file_size = job
                 
@@ -63,19 +107,18 @@ async def process_pending_jobs():
                 conn.commit()
                 
                 logger.info(f"[WORKER] ⏳ Found pending job: {job_id}")
-                logger.info(f"[WORKER]    File: {filename} ({file_size} bytes)")
                 print(f"[WORKER] ⏳ Found pending job: {job_id}")
-                print(f"[WORKER]    File: {filename} ({file_size} bytes)")
-        
-        # Process the job (outside transaction)
-        await _process_job(job_id, org_id, bot_id, filename, file_size)
-    
+                
+                return job
     except Exception as e:
-        msg = f"[WORKER] ❌ Error processing pending jobs: {e}"
-        logger.error(msg, exc_info=True)
-        print(msg)
-        import traceback
-        traceback.print_exc()
+        logger.error(f"[WORKER] Error getting job: {e}")
+        return None
+
+
+async def _process_job_wrapper(job):
+    """Wrapper to process a job from tuple."""
+    job_id, org_id, bot_id, filename, file_size = job
+    await _process_job(job_id, org_id, bot_id, filename, file_size)
 
 
 async def _process_job(job_id: str, org_id: str, bot_id: str, filename: str, 
