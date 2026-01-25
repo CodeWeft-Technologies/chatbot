@@ -206,12 +206,13 @@ async def get_job_status(job_id: UUID | str) -> dict:
                 
                 row = cur.fetchone()
                 if not row:
+                    print(f"[WORKER] Status query - job {job_id_str} NOT FOUND in database")
                     return None
                 
                 (jid, fname, status, progress, created, started, completed, 
                  error, doc_count) = row
                 
-                return {
+                result = {
                     "id": str(jid),
                     "filename": fname,
                     "status": status,
@@ -222,9 +223,13 @@ async def get_job_status(job_id: UUID | str) -> dict:
                     "error": error,
                     "documents_count": doc_count
                 }
+                print(f"[WORKER] Status query - job {job_id_str}: {status} ({progress}%)")
+                return result
     
     except Exception as e:
-        logger.error(f"[WORKER] Error getting job status: {e}")
+        msg = f"[WORKER] Error getting job status: {e}"
+        logger.error(msg, exc_info=True)
+        print(msg)
         return None
 
 
