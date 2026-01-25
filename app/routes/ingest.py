@@ -52,9 +52,18 @@ def ingest(bot_id: str, body: IngestBody, x_bot_key: Optional[str] = Header(defa
             except Exception:
                 public_api_key = None
         if public_api_key:
-            if not x_bot_key or x_bot_key != public_api_key:
+            # If bot has public API key, accept either x_bot_key OR valid authorization token
+            if x_bot_key and x_bot_key == public_api_key:
+                # Valid bot key provided
+                pass
+            elif authorization:
+                # Valid Bearer token provided, allow internal authenticated access
+                _require_auth(authorization, body.org_id)
+            else:
+                # No valid authentication
                 raise HTTPException(status_code=403, detail="Invalid bot key")
         else:
+            # Bot has no public API key, require authentication
             _require_auth(authorization, body.org_id)
     finally:
         conn.close()
@@ -150,9 +159,18 @@ def ingest_url(bot_id: str, body: UrlBody, x_bot_key: Optional[str] = Header(def
             except Exception:
                 public_api_key = None
         if public_api_key:
-            if not x_bot_key or x_bot_key != public_api_key:
+            # If bot has public API key, accept either x_bot_key OR valid authorization token
+            if x_bot_key and x_bot_key == public_api_key:
+                # Valid bot key provided
+                pass
+            elif authorization:
+                # Valid Bearer token provided, allow internal authenticated access
+                _require_auth(authorization, body.org_id)
+            else:
+                # No valid authentication
                 raise HTTPException(status_code=403, detail="Invalid bot key")
         else:
+            # Bot has no public API key, require authentication
             _require_auth(authorization, body.org_id)
     finally:
         conn.close()
