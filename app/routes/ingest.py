@@ -528,6 +528,9 @@ async def get_ingest_job_status(job_id: str, authorization: Optional[str] = Head
     import logging
     from app.services.background_worker import get_job_status
     
+    # Log FIRST before anything else
+    print(f"[STATUS] ← Incoming poll request for job: {job_id[:8]}...")
+    
     logger = logging.getLogger(__name__)
     status = await get_job_status(job_id)
     if not status:
@@ -535,7 +538,7 @@ async def get_ingest_job_status(job_id: str, authorization: Optional[str] = Head
         raise HTTPException(status_code=404, detail="Job not found")
     
     # Log status responses to debug frontend polling
-    print(f"[STATUS] ← Front-end poll: {job_id[:8]}... status={status['status']} progress={status['progress']}%")
+    print(f"[STATUS] → Responding: status={status['status']} progress={status['progress']}% documents={status['documents_count']}")
     return status
 
 
