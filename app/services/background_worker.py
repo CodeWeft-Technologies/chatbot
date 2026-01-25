@@ -47,7 +47,7 @@ async def process_pending_jobs():
                 
                 job = cur.fetchone()
                 if not job:
-                    logger.debug("[WORKER] No pending jobs found")
+                    # Silently return if no jobs
                     return  # No pending jobs
                 
                 job_id, org_id, bot_id, filename, file_size = job
@@ -60,7 +60,8 @@ async def process_pending_jobs():
                 """, (job_id,))
                 conn.commit()
                 
-                logger.info(f"[WORKER] Found pending job {job_id}: {filename}")
+                logger.info(f"[WORKER] ⏳ Found pending job: {job_id}")
+                logger.info(f"[WORKER]    File: {filename} ({file_size} bytes)")
         
         # Process the job (outside transaction)
         await _process_job(job_id, org_id, bot_id, filename, file_size)
@@ -73,7 +74,7 @@ async def _process_job(job_id: str, org_id: str, bot_id: str, filename: str,
                        file_size: int):
     """Process a single ingestion job - actual file processing."""
     try:
-        logger.info(f"[WORKER-{job_id}] Starting file processing: {filename}")
+        logger.info(f"[WORKER-{job_id}] 🚀 Starting file processing: {filename}")
         
         # Fetch file bytes from database
         with psycopg.connect(settings.SUPABASE_DB_DSN) as conn:
@@ -84,7 +85,7 @@ async def _process_job(job_id: str, org_id: str, bot_id: str, filename: str,
                     raise Exception(f"Job {job_id} not found in database")
                 file_bytes = row[0]
         
-        logger.info(f"[WORKER-{job_id}] Retrieved {len(file_bytes)} bytes for processing")
+        logger.info(f"[WORKER-{job_id}] ✓ Retrieved {len(file_bytes)} bytes from database")
         
         # Update progress: extracting
         with psycopg.connect(settings.SUPABASE_DB_DSN) as conn:
@@ -92,8 +93,10 @@ async def _process_job(job_id: str, org_id: str, bot_id: str, filename: str,
                 cur.execute("UPDATE ingest_jobs SET progress = 20 WHERE id = %s", (job_id,))
                 conn.commit()
         
+        logger.info(f"[WORKER-{job_id}] 📊 Progress: 20% (Extracting elements...)")
+        
         # Process multimodal file
-        logger.info(f"[WORKER-{job_id}] Calling process_multimodal_file...")
+        logger.info(f"[WORKER-{job_id}] 🧠 Calling process_multimodal_file...")
         inserted, skipped = await process_multimodal_file(
             filename=filename,
             file_bytes=file_bytes,
@@ -101,13 +104,16 @@ async def _process_job(job_id: str, org_id: str, bot_id: str, filename: str,
             bot_id=bot_id,
         )
         
+        logger.info(f"[WORKER-{job_id}] ✓ Extraction complete: {inserted} inserted, {skipped} skipped")
+        
         # Update progress: embedding
         with psycopg.connect(settings.SUPABASE_DB_DSN) as conn:
             with conn.cursor() as cur:
                 cur.execute("UPDATE ingest_jobs SET progress = 80 WHERE id = %s", (job_id,))
                 conn.commit()
         
-        logger.info(f"[WORKER-{job_id}] ✅ Processing completed: {inserted} inserted, {skipped} skipped")
+        logger.info(f"[WORKER-{job_id}] 📊 Progress: 80% (Creating embeddings...)")
+        logger.info(f"[WORKER-{job_id}] ⏳ Finalizing...")
         
         # Mark as completed
         with psycopg.connect(settings.SUPABASE_DB_DSN) as conn:
@@ -121,6 +127,8 @@ async def _process_job(job_id: str, org_id: str, bot_id: str, filename: str,
                     WHERE id = %s
                 """, (inserted, job_id))
                 conn.commit()
+        
+        logger.info(f"[WORKER-{job_id}] ✅ COMPLETED: {inserted} documents ingested successfully!")
         
         # Unload model to free memory
         try:
