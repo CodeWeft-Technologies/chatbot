@@ -124,17 +124,37 @@ async def _process_job(job_id: str, org_id: str, bot_id: str, filename: str,
         logger.info(msg)
         print(msg)
         
-        # Update progress: embedding
+        # Update progress: 40% (halfway through extraction)
         with psycopg.connect(settings.SUPABASE_DB_DSN) as conn:
             with conn.cursor() as cur:
-                cur.execute("UPDATE ingest_jobs SET progress = 80 WHERE id = %s", (job_id,))
+                cur.execute("UPDATE ingest_jobs SET progress = 40 WHERE id = %s", (job_id,))
                 conn.commit()
         
-        msg = f"[WORKER-{job_id}] 📊 Progress: 80% (Creating embeddings...)"
+        msg = f"[WORKER-{job_id}] 📊 Progress: 40% (Processing chunks...)"
+        logger.info(msg)
+        print(msg)
+        
+        # Update progress: 60% (three-quarters through)
+        with psycopg.connect(settings.SUPABASE_DB_DSN) as conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE ingest_jobs SET progress = 60 WHERE id = %s", (job_id,))
+                conn.commit()
+        
+        msg = f"[WORKER-{job_id}] 📊 Progress: 60% (Creating embeddings...)"
         logger.info(msg)
         print(msg)
         
         msg = f"[WORKER-{job_id}] ⏳ Finalizing..."
+        logger.info(msg)
+        print(msg)
+        
+        # Update progress: 90% (almost done)
+        with psycopg.connect(settings.SUPABASE_DB_DSN) as conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE ingest_jobs SET progress = 90 WHERE id = %s", (job_id,))
+                conn.commit()
+        
+        msg = f"[WORKER-{job_id}] 📊 Progress: 90% (Finalizing...)"
         logger.info(msg)
         print(msg)
         
