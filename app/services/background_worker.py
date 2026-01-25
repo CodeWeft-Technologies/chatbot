@@ -124,6 +124,9 @@ async def _process_job(job_id: str, org_id: str, bot_id: str, filename: str,
         logger.info(msg)
         print(msg)
         
+        # Add delay so frontend can poll 40%
+        await asyncio.sleep(2)
+        
         # Update progress: 40% (halfway through extraction)
         with psycopg.connect(settings.SUPABASE_DB_DSN) as conn:
             with conn.cursor() as cur:
@@ -134,6 +137,9 @@ async def _process_job(job_id: str, org_id: str, bot_id: str, filename: str,
         logger.info(msg)
         print(msg)
         
+        # Add delay so frontend can poll 60%
+        await asyncio.sleep(2)
+        
         # Update progress: 60% (three-quarters through)
         with psycopg.connect(settings.SUPABASE_DB_DSN) as conn:
             with conn.cursor() as cur:
@@ -143,6 +149,9 @@ async def _process_job(job_id: str, org_id: str, bot_id: str, filename: str,
         msg = f"[WORKER-{job_id}] 📊 Progress: 60% (Creating embeddings...)"
         logger.info(msg)
         print(msg)
+        
+        # Add delay so frontend can poll 90%
+        await asyncio.sleep(2)
         
         msg = f"[WORKER-{job_id}] ⏳ Finalizing..."
         logger.info(msg)
@@ -157,6 +166,9 @@ async def _process_job(job_id: str, org_id: str, bot_id: str, filename: str,
         msg = f"[WORKER-{job_id}] 📊 Progress: 90% (Finalizing...)"
         logger.info(msg)
         print(msg)
+        
+        # Add delay so frontend can poll 100%
+        await asyncio.sleep(1)
         
         # Mark as completed
         with psycopg.connect(settings.SUPABASE_DB_DSN) as conn:
