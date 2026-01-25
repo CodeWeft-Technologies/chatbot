@@ -1159,16 +1159,19 @@ def on_startup():
     import threading
     def run_background_worker():
         """Run the background worker in a separate thread"""
+        print("[STARTUP] Starting background worker thread...")  # Use print for guaranteed visibility
         logger.info("[STARTUP] Starting background worker thread...")
         try:
             from app.services.background_worker import start_background_worker
             asyncio.run(start_background_worker())
         except Exception as e:
+            print(f"[STARTUP] Background worker failed: {e}")  # Use print
             logger.error(f"[STARTUP] Background worker failed: {e}")
     
     worker_thread = threading.Thread(target=run_background_worker, daemon=True)
     worker_thread.start()
-    logger.info("[STARTUP] Background worker thread started")
+    print("[STARTUP] ✅ Background worker thread started")  # Use print
+    logger.info("[STARTUP] ✅ Background worker thread started")
     
     # Schedule periodic cleanup of old conversations
     import threading
