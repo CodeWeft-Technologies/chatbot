@@ -16,16 +16,25 @@ logger = logging.getLogger(__name__)
 
 async def start_background_worker():
     """Start the background worker that processes ingestion jobs."""
-    logger.info("[WORKER] Starting background ingestion worker...")
+    print("[WORKER] 🚀 Starting background ingestion worker...")
+    logger.info("[WORKER] 🚀 Starting background ingestion worker...")
     
     # Give the main app a moment to initialize
     await asyncio.sleep(2)
     
+    poll_count = 0
     while True:
         try:
+            poll_count += 1
+            # Log every 10th poll to avoid spam, but show first few
+            if poll_count <= 3 or poll_count % 10 == 0:
+                print(f"[WORKER] 🔄 Poll #{poll_count} - checking for pending jobs...")
+                logger.info(f"[WORKER] 🔄 Poll #{poll_count} - checking for pending jobs...")
+            
             await process_pending_jobs()
         except Exception as e:
-            logger.error(f"[WORKER] Error in main loop: {e}")
+            print(f"[WORKER] ❌ Error in main loop: {e}")
+            logger.error(f"[WORKER] ❌ Error in main loop: {e}")
         
         # Poll every 2 seconds
         await asyncio.sleep(2)
@@ -61,20 +70,28 @@ async def process_pending_jobs():
                 conn.commit()
                 
                 logger.info(f"[WORKER] ⏳ Found pending job: {job_id}")
-                logger.info(f"[WORKER]    File: {filename} ({file_size} bytes)")
+                logger.info(f"[WORKER]    File: {filename} ({file_size} bytes}")
+                print(f"[WORKER] ⏳ Found pending job: {job_id}")
+                print(f"[WORKER]    File: {filename} ({file_size} bytes)")
         
         # Process the job (outside transaction)
         await _process_job(job_id, org_id, bot_id, filename, file_size)
     
     except Exception as e:
-        logger.error(f"[WORKER] Error processing pending jobs: {e}")
+        msg = f"[WORKER] ❌ Error processing pending jobs: {e}"
+        logger.error(msg, exc_info=True)
+        print(msg)
+        import traceback
+        traceback.print_exc()
 
 
 async def _process_job(job_id: str, org_id: str, bot_id: str, filename: str, 
                        file_size: int):
     """Process a single ingestion job - actual file processing."""
     try:
-        logger.info(f"[WORKER-{job_id}] 🚀 Starting file processing: {filename}")
+        msg = f"[WORKER-{job_id}] 🚀 Starting file processing: {filename}"
+        logger.info(msg)
+        print(msg)
         
         # Fetch file bytes from database
         with psycopg.connect(settings.SUPABASE_DB_DSN) as conn:
@@ -85,7 +102,9 @@ async def _process_job(job_id: str, org_id: str, bot_id: str, filename: str,
                     raise Exception(f"Job {job_id} not found in database")
                 file_bytes = row[0]
         
-        logger.info(f"[WORKER-{job_id}] ✓ Retrieved {len(file_bytes)} bytes from database")
+        msg = f"[WORKER-{job_id}] ✓ Retrieved {len(file_bytes)} bytes from database"
+        logger.info(msg)
+        print(msg)
         
         # Update progress: extracting
         with psycopg.connect(settings.SUPABASE_DB_DSN) as conn:
@@ -93,10 +112,14 @@ async def _process_job(job_id: str, org_id: str, bot_id: str, filename: str,
                 cur.execute("UPDATE ingest_jobs SET progress = 20 WHERE id = %s", (job_id,))
                 conn.commit()
         
-        logger.info(f"[WORKER-{job_id}] 📊 Progress: 20% (Extracting elements...)")
+        msg = f"[WORKER-{job_id}] 📊 Progress: 20% (Extracting elements...)"
+        logger.info(msg)
+        print(msg)
         
         # Process multimodal file
-        logger.info(f"[WORKER-{job_id}] 🧠 Calling process_multimodal_file...")
+        msg = f"[WORKER-{job_id}] 🧠 Calling process_multimodal_file..."
+        logger.info(msg)
+        print(msg)
         inserted, skipped = await process_multimodal_file(
             filename=filename,
             file_bytes=file_bytes,
@@ -104,7 +127,9 @@ async def _process_job(job_id: str, org_id: str, bot_id: str, filename: str,
             bot_id=bot_id,
         )
         
-        logger.info(f"[WORKER-{job_id}] ✓ Extraction complete: {inserted} inserted, {skipped} skipped")
+        msg = f"[WORKER-{job_id}] ✓ Extraction complete: {inserted} inserted, {skipped} skipped"
+        logger.info(msg)
+        print(msg)
         
         # Update progress: embedding
         with psycopg.connect(settings.SUPABASE_DB_DSN) as conn:
@@ -112,8 +137,13 @@ async def _process_job(job_id: str, org_id: str, bot_id: str, filename: str,
                 cur.execute("UPDATE ingest_jobs SET progress = 80 WHERE id = %s", (job_id,))
                 conn.commit()
         
-        logger.info(f"[WORKER-{job_id}] 📊 Progress: 80% (Creating embeddings...)")
-        logger.info(f"[WORKER-{job_id}] ⏳ Finalizing...")
+        msg = f"[WORKER-{job_id}] 📊 Progress: 80% (Creating embeddings...)"
+        logger.info(msg)
+        print(msg)
+        
+        msg = f"[WORKER-{job_id}] ⏳ Finalizing..."
+        logger.info(msg)
+        print(msg)
         
         # Mark as completed
         with psycopg.connect(settings.SUPABASE_DB_DSN) as conn:
@@ -128,7 +158,9 @@ async def _process_job(job_id: str, org_id: str, bot_id: str, filename: str,
                 """, (inserted, job_id))
                 conn.commit()
         
-        logger.info(f"[WORKER-{job_id}] ✅ COMPLETED: {inserted} documents ingested successfully!")
+        msg = f"[WORKER-{job_id}] ✅ COMPLETED: {inserted} documents ingested successfully!"
+        logger.info(msg)
+        print(msg)
         
         # Unload model to free memory
         try:
@@ -138,7 +170,11 @@ async def _process_job(job_id: str, org_id: str, bot_id: str, filename: str,
             logger.warning(f"[WORKER-{job_id}] Failed to unload model: {e}")
     
     except Exception as e:
-        logger.error(f"[WORKER-{job_id}] ❌ Processing failed: {e}", exc_info=True)
+        msg = f"[WORKER-{job_id}] ❌ Processing failed: {e}"
+        logger.error(msg, exc_info=True)
+        print(msg)
+        import traceback
+        traceback.print_exc()
         
         # Mark as failed
         with psycopg.connect(settings.SUPABASE_DB_DSN) as conn:
