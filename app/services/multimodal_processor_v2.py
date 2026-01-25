@@ -711,16 +711,16 @@ def create_langchain_documents(
     
     # Handle standalone images separately
     if standalone_image_meta:
-        logger.info("[LANGCHAIN] Processing standalone image with LLM...")
-        base64_image = standalone_image_meta.get('base64_image')
-        image_format = standalone_image_meta.get('image_format', 'jpg')
-        
-        # Check if Gemini summaries are disabled
-        if os.getenv("DISABLE_GEMINI_SUMMARIES", "false").lower() == "true":
-            logger.info("[LANGCHAIN] ⚠️ Gemini summaries disabled - using generic image description")
-            enhanced_content = f"[Image file: {source_file}]\nThis is an image document. Enable DISABLE_GEMINI_SUMMARIES=false to generate AI descriptions."
-        else:
-            try:
+        try:
+            logger.info("[LANGCHAIN] Processing standalone image with LLM...")
+            base64_image = standalone_image_meta.get('base64_image')
+            image_format = standalone_image_meta.get('image_format', 'jpg')
+            
+            # Check if Gemini summaries are disabled
+            if os.getenv("DISABLE_GEMINI_SUMMARIES", "false").lower() == "true":
+                logger.info("[LANGCHAIN] ⚠️ Gemini summaries disabled - using generic image description")
+                enhanced_content = f"[Image file: {source_file}]\nThis is an image document. Enable DISABLE_GEMINI_SUMMARIES=false to generate AI descriptions."
+            else:
                 logger.info("[LANGCHAIN] Summarizing image with Gemini...")
                 model = _get_gemini_model()
                 if not model:
@@ -747,12 +747,16 @@ def create_langchain_documents(
 
                 enhanced_content = response.text
                 logger.info(f"[LANGCHAIN] Gemini generated {len(enhanced_content)} char summary for image")
-            except Exception as e:
-                logger.warning(f"[LANGCHAIN] Failed to get Gemini summary: {e}")
-                enhanced_content = f"[Image: {source_file}] (AI summary unavailable)"
+            
+            # Create metadata for standalone image
+            metadata = {
+                "source_file": source_file,
+                "file_hash": file_hash,
+                "content_type": content_type,
+                "chunk_id": 0,
                 "is_standalone_image": True,
                 "image_format": image_format,
-                "dimensions": standalone_image_meta.get('dimensions', 'unknown'),
+                "dimensions": standalone_image_meta.get('original_dimensions', 'unknown'),
             }
             
             doc = Document(
@@ -775,7 +779,7 @@ def create_langchain_documents(
                 "error": str(llm_err),
             }
             doc = Document(
-                page_content=f"Image ({standalone_image_meta.get('dimensions', 'unknown')})",
+                page_content=f"Image ({standalone_image_meta.get('original_dimensions', 'unknown')})",
                 metadata=metadata,
             )
             documents.append(doc)
