@@ -70,7 +70,7 @@ async def process_pending_jobs():
                 conn.commit()
                 
                 logger.info(f"[WORKER] ⏳ Found pending job: {job_id}")
-                logger.info(f"[WORKER]    File: {filename} ({file_size} bytes}")
+                logger.info(f"[WORKER]    File: {filename} ({file_size} bytes)")
                 print(f"[WORKER] ⏳ Found pending job: {job_id}")
                 print(f"[WORKER]    File: {filename} ({file_size} bytes)")
         
