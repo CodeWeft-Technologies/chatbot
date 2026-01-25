@@ -305,41 +305,68 @@ async def _extract_csv(file_bytes: bytes) -> List[Any]:
 async def _extract_image(file_bytes: bytes) -> Tuple[List[Any], Dict[str, Any]]:
     """Extract standalone image as base64 for direct LLM processing
     
+    OPTIMIZATION: Compresses images to reduce token usage with Gemini
+    
     Returns:
         Tuple of (elements, image_metadata) where image_metadata contains:
-        - base64_image: Base64 encoded image
+        - base64_image: Base64 encoded image (compressed)
         - image_format: Image format (jpg, png, etc.)
-        - dimensions: Image dimensions
+        - dimensions: Original image dimensions
+        - compressed_size: Size after compression
         - processing_mode: 'direct_llm' for standalone images
     """
     try:
         from unstructured.documents.elements import Text as TextElement
+        from PIL import Image
         
         logger.info("[EXTRACT-IMAGE] Preparing standalone image for LLM processing...")
         
-        # Encode image as base64
-        base64_image = base64.b64encode(file_bytes).decode('utf-8')
+        # Step 1: Open and get original dimensions
+        img = Image.open(io.BytesIO(file_bytes))
+        img_format = img.format.lower() if img.format else "jpg"
+        original_dimensions = f"{img.size[0]}×{img.size[1]}"
+        original_size_kb = len(file_bytes) / 1024
         
-        # Detect image format
-        try:
-            from PIL import Image
-            img = Image.open(io.BytesIO(file_bytes))
-            img_format = img.format.lower() if img.format else "jpg"
-            dimensions = f"{img.size[0]}×{img.size[1]}"
-        except:
-            img_format = "jpg"
-            dimensions = "unknown"
+        logger.info(f"[EXTRACT-IMAGE] Original: {original_dimensions}, {original_size_kb:.1f}KB")
         
-        logger.info(f"[EXTRACT-IMAGE] Image format: {img_format}, dimensions: {dimensions}")
+        # Step 2: Resize image to reduce tokens (max 1024px on longest side)
+        # Gemini tokens scale with image resolution, so resizing saves a lot
+        max_dimension = 1024
+        if img.size[0] > max_dimension or img.size[1] > max_dimension:
+            ratio = max_dimension / max(img.size)
+            new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))
+            img = img.resize(new_size, Image.Resampling.LANCZOS)
+            logger.info(f"[EXTRACT-IMAGE] Resized to: {new_size[0]}×{new_size[1]} (reduced tokens)")
+        
+        # Step 3: Compress image (quality trade-off for token savings)
+        # Convert RGBA to RGB for JPEG compression
+        if img.mode == 'RGBA':
+            rgb_img = Image.new('RGB', img.size, (255, 255, 255))
+            rgb_img.paste(img, mask=img.split()[3])
+            img = rgb_img
+        
+        # Save compressed to BytesIO
+        compressed_bytes = io.BytesIO()
+        quality = 80  # Balance between quality and token usage
+        img.save(compressed_bytes, format='JPEG', quality=quality, optimize=True)
+        compressed_bytes.seek(0)
+        compressed_data = compressed_bytes.getvalue()
+        
+        # Step 4: Encode as base64
+        base64_image = base64.b64encode(compressed_data).decode('utf-8')
+        compressed_size_kb = len(compressed_data) / 1024
+        
+        logger.info(f"[EXTRACT-IMAGE] 💰 Compressed: {compressed_size_kb:.1f}KB (saved {original_size_kb - compressed_size_kb:.1f}KB, {100*(1-compressed_size_kb/original_size_kb):.0f}% reduction)")
         
         # Create simple text element for placeholder
-        placeholder = TextElement(text=f"Standalone image ({dimensions}, {img_format})")
+        placeholder = TextElement(text=f"Standalone image ({original_dimensions}, {img_format})")
         
         # Return both element and metadata
         image_metadata = {
             "base64_image": base64_image,
-            "image_format": img_format,
-            "dimensions": dimensions,
+            "image_format": "jpg",  # Now always JPEG after compression
+            "original_dimensions": original_dimensions,
+            "compressed_size_kb": compressed_size_kb,
             "processing_mode": "direct_llm"
         }
         
@@ -440,6 +467,63 @@ def _detect_image_mime_type(base64_str: str) -> str:
         return 'image/jpeg'  # Default fallback
 
 
+def _compress_base64_image(image_b64: str, max_dimension: int = 1024, quality: int = 80) -> str:
+    """
+    Compress base64 encoded image to reduce Gemini token usage.
+    
+    Optimization: Reduces image size by resizing and reducing quality.
+    This significantly reduces token consumption in Gemini API calls.
+    
+    Args:
+        image_b64: Base64 encoded image string
+        max_dimension: Max pixel dimension (default 1024)
+        quality: JPEG quality 1-100 (default 80)
+    
+    Returns:
+        Compressed base64 image string
+    """
+    try:
+        import base64 as b64_module
+        from PIL import Image
+        
+        # Decode base64 to bytes
+        image_bytes = b64_module.b64decode(image_b64)
+        original_size_kb = len(image_bytes) / 1024
+        
+        # Open image
+        img = Image.open(io.BytesIO(image_bytes))
+        
+        # Resize if too large
+        if img.size[0] > max_dimension or img.size[1] > max_dimension:
+            ratio = max_dimension / max(img.size)
+            new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))
+            img = img.resize(new_size, Image.Resampling.LANCZOS)
+        
+        # Convert RGBA to RGB for compression
+        if img.mode == 'RGBA':
+            rgb_img = Image.new('RGB', img.size, (255, 255, 255))
+            rgb_img.paste(img, mask=img.split()[3])
+            img = rgb_img
+        
+        # Compress
+        compressed_bytes = io.BytesIO()
+        img.save(compressed_bytes, format='JPEG', quality=quality, optimize=True)
+        compressed_bytes.seek(0)
+        compressed_data = compressed_bytes.getvalue()
+        
+        # Re-encode as base64
+        compressed_b64 = b64_module.b64encode(compressed_data).decode('utf-8')
+        compressed_size_kb = len(compressed_data) / 1024
+        
+        reduction = 100 * (1 - compressed_size_kb / original_size_kb)
+        logger.debug(f"[COMPRESS] Image: {original_size_kb:.1f}KB → {compressed_size_kb:.1f}KB ({reduction:.0f}% reduction)")
+        
+        return compressed_b64
+    except Exception as e:
+        logger.warning(f"[COMPRESS] Failed to compress image: {e} - using original")
+        return image_b64
+
+
 def separate_content_types(chunk: Any) -> Dict[str, Any]:
     """
     Analyze what types of content are in a chunk.
@@ -488,9 +572,13 @@ def separate_content_types(chunk: Any) -> Dict[str, Any]:
                     
                     if hasattr(element, 'metadata') and hasattr(element.metadata, 'image_base64'):
                         image_b64 = element.metadata.image_base64
+                        
+                        # Compress image to reduce token usage with Gemini
+                        compressed_b64 = _compress_base64_image(image_b64)
+                        
                         # Detect MIME type from base64 magic bytes
-                        mime_type = _detect_image_mime_type(image_b64)
-                        content_data['images'].append((image_b64, mime_type))
+                        mime_type = _detect_image_mime_type(compressed_b64)
+                        content_data['images'].append((compressed_b64, mime_type))
                         logger.debug(f"[CONTENT] Found image in chunk ({mime_type})")
     
     except Exception as e:
