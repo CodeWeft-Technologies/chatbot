@@ -525,12 +525,17 @@ def message_usage_bot(org_id: str, bot_id: str, days: int = 30, authorization: O
 @router.get("/ingest/jobs/status/{job_id}")
 async def get_ingest_job_status(job_id: str, authorization: Optional[str] = Header(default=None)):
     """Get status of a file ingestion job"""
+    import logging
     from app.services.background_worker import get_job_status
     
+    logger = logging.getLogger(__name__)
     status = await get_job_status(job_id)
     if not status:
+        print(f"[STATUS] ❌ Job {job_id} not found in database")
         raise HTTPException(status_code=404, detail="Job not found")
     
+    # Log status responses to debug frontend polling
+    print(f"[STATUS] ← Front-end poll: {job_id[:8]}... status={status['status']} progress={status['progress']}%")
     return status
 
 

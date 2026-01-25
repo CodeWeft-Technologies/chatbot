@@ -111,6 +111,7 @@ async def _process_job(job_id: str, org_id: str, bot_id: str, filename: str,
             with conn.cursor() as cur:
                 cur.execute("UPDATE ingest_jobs SET progress = 20 WHERE id = %s", (job_id,))
                 conn.commit()
+                print(f"[WORKER-{job_id}] DB: progress updated to 20%")
         
         msg = f"[WORKER-{job_id}] 📊 Progress: 20% (Extracting elements...)"
         logger.info(msg)
@@ -136,6 +137,7 @@ async def _process_job(job_id: str, org_id: str, bot_id: str, filename: str,
             with conn.cursor() as cur:
                 cur.execute("UPDATE ingest_jobs SET progress = 80 WHERE id = %s", (job_id,))
                 conn.commit()
+                print(f"[WORKER-{job_id}] DB: progress updated to 80%")
         
         msg = f"[WORKER-{job_id}] 📊 Progress: 80% (Creating embeddings...)"
         logger.info(msg)
@@ -157,6 +159,7 @@ async def _process_job(job_id: str, org_id: str, bot_id: str, filename: str,
                     WHERE id = %s
                 """, (inserted, job_id))
                 conn.commit()
+                print(f"[WORKER-{job_id}] DB: status updated to COMPLETED (100%), {inserted} documents")
         
         msg = f"[WORKER-{job_id}] ✅ COMPLETED: {inserted} documents ingested successfully!"
         logger.info(msg)
