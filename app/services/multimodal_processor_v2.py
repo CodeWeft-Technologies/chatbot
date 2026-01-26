@@ -41,7 +41,26 @@ def _get_openai_client():
 
 
 def _get_gemini_model():
-    """Get or create Gemini model (vision-capable)."""
+    """
+    Get or create Gemini model (vision-capable).
+
+    Cost reference (as of 2026):
+
+    Input (per million tokens):
+        - 2.0 Flash: $0.10
+        - 2.5 Flash: $0.30
+        - 2.5 Pro: ~$1.25+
+
+    Output (per million tokens):
+        - 2.0 Flash: $0.40
+        - 2.5 Flash: $2.50
+        - 2.5 Pro: ~$10–15
+
+    Example cost per image (1,500 input tokens, 200 output tokens):
+        - 2.0 Flash: ~$0.00025 per image
+        - 2.5 Flash: ~$0.0012 per image
+        - 2.5 Pro: ~$0.005–0.007 per image
+    """
     global _gemini_model
     if _gemini_model is None:
         api_key = os.getenv("GEMINI_API_KEY")
@@ -50,7 +69,8 @@ def _get_gemini_model():
             return None
         try:
             genai.configure(api_key=api_key)
-            model_name = os.getenv("GEMINI_MODEL_NAME", "gemini-2.5-pro")
+            model_name = os.getenv("GEMINI_MODEL_NAME", "gemini-2.0-flash")
+            
             _gemini_model = genai.GenerativeModel(
                 model_name,
                 generation_config={
@@ -736,7 +756,7 @@ def create_langchain_documents(
                             }
                         },
                     ],
-                    generation_config={"max_output_tokens": 1000},
+                    generation_config={"max_output_tokens": 800},
                     safety_settings=[
                         {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
                         {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
