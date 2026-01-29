@@ -1,7 +1,9 @@
 from fastapi import APIRouter, HTTPException, Depends
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 from app.db import get_conn
+from app.config import settings
 import json
 import hashlib
 from datetime import date, time, datetime
@@ -1675,8 +1677,8 @@ def cancel_booking(booking_id: int, body: BookingCancelBody):
         raise HTTPException(status_code=400, detail=str(e))
     finally:
         conn.close()
-@router.
-get("/appointment-portal/{bot_id}", response_class=HTMLResponse)
+
+@router.get("/appointment-portal/{bot_id}", response_class=HTMLResponse)
 def unified_appointment_portal(bot_id: str, org_id: str, bot_key: Optional[str] = None):
     """Serve a standalone unified appointment portal (no login required)"""
     base = getattr(settings, 'PUBLIC_API_BASE_URL', '') or ''
