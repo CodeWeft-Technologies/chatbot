@@ -1518,3 +1518,160 @@ def apply_template_to_form(config_id: str, template_id: str):
         raise HTTPException(status_code=400, detail=str(e))
     finally:
         conn.close()
+
+class BookingCancelBody(BaseModel):
+    org_id: str
+
+@router.post("/bookings/{booking_id}/cancel")
+def cancel_booking(booking_id: int, body: BookingCancelBody):
+    """Cancel a booking by ID"""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            # First check if booking exists and get details
+            cur.execute("""
+                select id, bot_id, customer_name, customer_email, booking_date, start_time, end_time, 
+                       status, calendar_event_id
+                from bookings
+                where id = %s and org_id = %s
+            """, (booking_id, body.org_id))
+            
+            booking = cur.fetchone()
+            if not booking:
+                raise HTTPException(status_code=404, detail="Booking not found")
+            
+            booking_id_db, bot_id, customer_name, customer_email, booking_date, start_time, end_time, current_status, calendar_event_id = booking
+            
+            # Check if already cancelled
+            if current_status and current_status.lower() == 'cancelled':
+                return {
+                    "success": True,
+                    "booking_id": booking_id,
+                    "message": "Appointment was already cancelled",
+                    "details": {
+                        "customer_name": customer_name,
+                        "customer_email": customer_email,
+                        "booking_date": str(booking_date),
+                        "start_time": str(start_time),
+                        "end_time": str(end_time),
+                        "status": current_status
+                    }
+                }
+            
+            # Check if appointment is in the past
+            from datetime import datetime, timezone
+            import datetime as dt
+            
+            try:
+                booking_datetime = dt.datetime.combine(booking_date, start_time)
+                now = dt.datetime.now()
+                
+                if booking_datetime <= now:
+                    # Update status to completed if in the past
+                    cur.execute("""
+                        update bookings 
+                        set status = 'completed', updated_at = now()
+                        where id = %s
+                    """, (booking_id,))
+                    conn.commit()
+                    raise HTTPException(status_code=409, detail="Cannot cancel past appointments. This appointment has been marked as completed.")
+            except HTTPException:
+                raise
+            except Exception:
+                pass  # Continue with cancellation if date parsing fails
+            
+            # Try to cancel in Google Calendar if event exists
+            calendar_cancelled = False
+            calendar_error = None
+            if calendar_event_id:
+                try:
+                    # Get calendar OAuth details
+                    cur.execute("""
+                        select calendar_id, access_token_enc, refresh_token_enc 
+                        from bot_calendar_oauth 
+                        where bot_id = %s and provider = 'google'
+                    """, (bot_id,))
+                    cal_row = cur.fetchone()
+                    
+                    if cal_row:
+                        cal_id, at_enc, rt_enc = cal_row
+                        
+                        # Import calendar functions
+                        from app.services.calendar_google import _decrypt, build_service_from_tokens, delete_event_oauth, refresh_access_token, _encrypt
+                        
+                        # Decrypt tokens
+                        at = _decrypt(at_enc) if at_enc else None
+                        rt = _decrypt(rt_enc) if rt_enc else None
+                        
+                        # Try to refresh token if needed
+                        if rt and not at:
+                            new_at = refresh_access_token(rt)
+                            if new_at:
+                                at = new_at
+                                # Save the new access token
+                                at_enc_new = _encrypt(new_at)
+                                cur.execute("""
+                                    update bot_calendar_oauth 
+                                    set access_token_enc = %s, updated_at = now()
+                                    where bot_id = %s and provider = 'google'
+                                """, (at_enc_new, bot_id))
+                                conn.commit()
+                        
+                        # Build service and delete event
+                        if at:
+                            svc = build_service_from_tokens(at, rt, None)
+                            if svc:
+                                success = delete_event_oauth(svc, cal_id or "primary", calendar_event_id)
+                                calendar_cancelled = success
+                                print(f"Calendar event deletion: {'✓' if success else '✗'} for event {calendar_event_id}")
+                            else:
+                                calendar_error = "Failed to build calendar service"
+                        else:
+                            calendar_error = "No valid access token"
+                    else:
+                        calendar_error = "No calendar configuration found"
+                except Exception as e:
+                    calendar_error = str(e)
+                    print(f"Calendar cancellation failed: {e}")
+                    # Don't fail the booking cancellation if calendar fails
+            
+            # Update booking status to cancelled
+            cur.execute("""
+                update bookings 
+                set status = 'cancelled', cancelled_at = now(), updated_at = now()
+                where id = %s
+                returning id
+            """, (booking_id,))
+            
+            result = cur.fetchone()
+            if not result:
+                raise HTTPException(status_code=404, detail="Failed to cancel booking")
+            
+            conn.commit()
+            
+            response = {
+                "success": True,
+                "booking_id": booking_id,
+                "message": "Appointment cancelled successfully",
+                "calendar_cancelled": calendar_cancelled,
+                "details": {
+                    "customer_name": customer_name,
+                    "customer_email": customer_email,
+                    "booking_date": str(booking_date),
+                    "start_time": str(start_time),
+                    "end_time": str(end_time)
+                }
+            }
+            
+            if calendar_error:
+                response["calendar_warning"] = f"Calendar sync failed: {calendar_error}"
+            
+            return response
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        conn.close()
