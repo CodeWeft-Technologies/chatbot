@@ -1675,3 +1675,397 @@ def cancel_booking(booking_id: int, body: BookingCancelBody):
         raise HTTPException(status_code=400, detail=str(e))
     finally:
         conn.close()
+@router.
+get("/appointment-portal/{bot_id}", response_class=HTMLResponse)
+def unified_appointment_portal(bot_id: str, org_id: str, bot_key: Optional[str] = None):
+    """Serve a standalone unified appointment portal (no login required)"""
+    base = getattr(settings, 'PUBLIC_API_BASE_URL', '') or ''
+    
+    # Generate form URLs
+    booking_url = f"{base.rstrip('/')}/api/form/{bot_id}?org_id={org_id}" + (f"&bot_key={bot_key}" if bot_key else "")
+    reschedule_url = f"{base.rstrip('/')}/api/reschedule/{bot_id}?org_id={org_id}" + (f"&bot_key={bot_key}" if bot_key else "")
+    
+    html = f"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Appointment Portal</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .tab-content {{ display: none; }}
+        .tab-content.active {{ display: block; }}
+        .tab-button.active {{ 
+            background-color: #3b82f6; 
+            color: white; 
+        }}
+        .tab-button {{
+            background-color: transparent;
+            color: #6b7280;
+        }}
+        .tab-button:hover {{
+            background-color: #f3f4f6;
+        }}
+        .tab-button.active:hover {{
+            background-color: #2563eb;
+        }}
+    </style>
+</head>
+<body class="min-h-screen bg-gray-50">
+    <div class="max-w-4xl mx-auto px-4 py-8">
+        <!-- Header -->
+        <div class="text-center mb-8">
+            <h1 class="text-3xl font-bold text-gray-900 mb-2">Appointment Portal</h1>
+            <p class="text-gray-600">Book, reschedule, check status, or cancel your appointments</p>
+        </div>
+
+        <!-- Navigation Tabs -->
+        <div class="flex justify-center mb-8">
+            <div class="bg-white rounded-lg p-1 shadow-sm border">
+                <div class="flex gap-1">
+                    <button class="tab-button active px-6 py-2 rounded-md font-medium transition-colors" onclick="showTab('book')">
+                        📅 Book
+                    </button>
+                    <button class="tab-button px-6 py-2 rounded-md font-medium transition-colors" onclick="showTab('reschedule')">
+                        🔄 Reschedule
+                    </button>
+                    <button class="tab-button px-6 py-2 rounded-md font-medium transition-colors" onclick="showTab('status')">
+                        📋 Status
+                    </button>
+                    <button class="tab-button px-6 py-2 rounded-md font-medium transition-colors" onclick="showTab('cancel')">
+                        ❌ Cancel
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Content -->
+        <div class="bg-white rounded-lg shadow-sm border">
+            <!-- Book Tab -->
+            <div id="book" class="tab-content active p-8 text-center">
+                <div class="max-w-md mx-auto">
+                    <div class="mb-6">
+                        <div class="w-16 h-16 mx-auto mb-4 bg-blue-100 rounded-full flex items-center justify-center">
+                            <span class="text-2xl">📅</span>
+                        </div>
+                        <h2 class="text-2xl font-semibold mb-2">Book New Appointment</h2>
+                        <p class="text-gray-600 mb-6">
+                            Schedule your appointment by filling out our booking form
+                        </p>
+                    </div>
+                    
+                    <a
+                        href="{booking_url}"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        class="inline-block w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-4 px-6 rounded-lg transition-colors shadow-md hover:shadow-lg"
+                    >
+                        📅 Open Booking Form
+                    </a>
+                    
+                    <p class="text-sm text-gray-500 mt-4">
+                        Opens in a new window • No login required
+                    </p>
+                </div>
+            </div>
+
+            <!-- Reschedule Tab -->
+            <div id="reschedule" class="tab-content p-8 text-center">
+                <div class="max-w-md mx-auto">
+                    <div class="mb-6">
+                        <div class="w-16 h-16 mx-auto mb-4 bg-orange-100 rounded-full flex items-center justify-center">
+                            <span class="text-2xl">🔄</span>
+                        </div>
+                        <h2 class="text-2xl font-semibold mb-2">Reschedule Appointment</h2>
+                        <p class="text-gray-600 mb-6">
+                            Change your existing appointment to a new date and time
+                        </p>
+                    </div>
+                    
+                    <a
+                        href="{reschedule_url}"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        class="inline-block w-full bg-orange-600 hover:bg-orange-700 text-white font-semibold py-4 px-6 rounded-lg transition-colors shadow-md hover:shadow-lg"
+                    >
+                        🔄 Open Reschedule Form
+                    </a>
+                    
+                    <p class="text-sm text-gray-500 mt-4">
+                        Opens in a new window • You will need your appointment ID
+                    </p>
+                </div>
+            </div>
+
+            <!-- Status Tab -->
+            <div id="status" class="tab-content p-6">
+                <h2 class="text-xl font-semibold mb-6">Check Appointment Status</h2>
+                
+                <div class="max-w-md mx-auto space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">
+                            Appointment ID
+                        </label>
+                        <input 
+                            type="text"
+                            id="statusAppointmentId"
+                            placeholder="Enter your appointment ID (e.g., 12345)" 
+                            class="w-full px-3 py-2 border border-gray-300 rounded-md text-center focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        />
+                    </div>
+                    
+                    <button 
+                        onclick="checkStatus()"
+                        class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-md transition-colors"
+                    >
+                        Check Status
+                    </button>
+
+                    <div id="statusError" class="hidden p-3 bg-red-50 border border-red-200 rounded-md">
+                        <p class="text-red-600 text-sm"></p>
+                    </div>
+
+                    <div id="statusResult" class="hidden mt-6 border rounded-lg">
+                        <!-- Status result will be populated here -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- Cancel Tab -->
+            <div id="cancel" class="tab-content p-6">
+                <h2 class="text-xl font-semibold mb-6">Cancel Appointment</h2>
+                
+                <div class="max-w-md mx-auto space-y-4">
+                    <div class="bg-red-50 border border-red-200 rounded-md p-4 mb-4">
+                        <p class="text-red-800 text-sm">
+                            ⚠️ <strong>Warning:</strong> Cancelling an appointment cannot be undone. 
+                            Please make sure you have the correct appointment ID.
+                        </p>
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">
+                            Appointment ID
+                        </label>
+                        <input 
+                            type="text"
+                            id="cancelAppointmentId"
+                            placeholder="Enter your appointment ID (e.g., 12345)" 
+                            class="w-full px-3 py-2 border border-gray-300 rounded-md text-center focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent"
+                        />
+                    </div>
+                    
+                    <button 
+                        onclick="cancelAppointment()"
+                        class="w-full bg-red-600 hover:bg-red-700 text-white font-semibold py-2 px-4 rounded-md transition-colors"
+                    >
+                        Cancel Appointment
+                    </button>
+
+                    <div id="cancelError" class="hidden p-3 bg-red-50 border border-red-200 rounded-md">
+                        <p class="text-red-600 text-sm"></p>
+                    </div>
+
+                    <div id="cancelResult" class="hidden p-3 bg-green-50 border border-green-200 rounded-md">
+                        <p class="text-green-600 text-sm"></p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <div class="text-center mt-8 text-sm text-gray-500">
+            <p>Need help? Contact our support team for assistance.</p>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = '{base}';
+        const ORG_ID = '{org_id}';
+        const BOT_KEY = '{bot_key or ""}';
+
+        function showTab(tabName) {{
+            // Hide all tabs
+            document.querySelectorAll('.tab-content').forEach(tab => {{
+                tab.classList.remove('active');
+            }});
+            
+            // Remove active class from all buttons
+            document.querySelectorAll('.tab-button').forEach(btn => {{
+                btn.classList.remove('active');
+            }});
+            
+            // Show selected tab
+            document.getElementById(tabName).classList.add('active');
+            
+            // Add active class to clicked button
+            event.target.classList.add('active');
+        }}
+
+        async function checkStatus() {{
+            const appointmentId = document.getElementById('statusAppointmentId').value.trim();
+            const errorDiv = document.getElementById('statusError');
+            const resultDiv = document.getElementById('statusResult');
+            
+            // Clear previous results
+            errorDiv.classList.add('hidden');
+            resultDiv.classList.add('hidden');
+            
+            if (!appointmentId) {{
+                showError('statusError', 'Please enter an appointment ID');
+                return;
+            }}
+
+            try {{
+                const response = await fetch(`${{API_BASE}}/api/booking/${{appointmentId}}`);
+                
+                if (!response.ok) {{
+                    throw new Error('Appointment not found');
+                }}
+
+                const booking = await response.json();
+                showStatusResult(booking);
+            }} catch (err) {{
+                showError('statusError', err.message || 'Failed to fetch appointment status');
+            }}
+        }}
+
+        async function cancelAppointment() {{
+            const appointmentId = document.getElementById('cancelAppointmentId').value.trim();
+            const errorDiv = document.getElementById('cancelError');
+            const resultDiv = document.getElementById('cancelResult');
+            
+            // Clear previous results
+            errorDiv.classList.add('hidden');
+            resultDiv.classList.add('hidden');
+            
+            if (!appointmentId) {{
+                showError('cancelError', 'Please enter an appointment ID');
+                return;
+            }}
+
+            if (!confirm('Are you sure you want to cancel this appointment? This action cannot be undone.')) {{
+                return;
+            }}
+
+            try {{
+                const response = await fetch(`${{API_BASE}}/api/bookings/${{appointmentId}}/cancel`, {{
+                    method: 'POST',
+                    headers: {{
+                        'Content-Type': 'application/json',
+                    }},
+                    body: JSON.stringify({{
+                        org_id: ORG_ID
+                    }})
+                }});
+
+                if (!response.ok) {{
+                    const errorData = await response.json().catch(() => ({{}}));
+                    throw new Error(errorData.detail || 'Failed to cancel appointment');
+                }}
+
+                showSuccess('cancelResult', '✅ Appointment cancelled successfully');
+                document.getElementById('cancelAppointmentId').value = '';
+            }} catch (err) {{
+                showError('cancelError', err.message || 'Failed to cancel appointment');
+            }}
+        }}
+
+        function showError(elementId, message) {{
+            const errorDiv = document.getElementById(elementId);
+            errorDiv.querySelector('p').textContent = message;
+            errorDiv.classList.remove('hidden');
+        }}
+
+        function showSuccess(elementId, message) {{
+            const successDiv = document.getElementById(elementId);
+            successDiv.querySelector('p').textContent = message;
+            successDiv.classList.remove('hidden');
+        }}
+
+        function showStatusResult(booking) {{
+            const resultDiv = document.getElementById('statusResult');
+            
+            const formatDate = (dateStr) => {{
+                return new Date(dateStr).toLocaleDateString('en-US', {{
+                    weekday: 'long',
+                    year: 'numeric',
+                    month: 'long',
+                    day: 'numeric'
+                }});
+            }};
+
+            const formatTime = (timeStr) => {{
+                return new Date(`2000-01-01T${{timeStr}}`).toLocaleTimeString('en-US', {{
+                    hour: 'numeric',
+                    minute: '2-digit',
+                    hour12: true
+                }});
+            }};
+
+            const getStatusColor = (status) => {{
+                switch (status?.toLowerCase()) {{
+                    case 'confirmed': return 'text-green-600 bg-green-50';
+                    case 'cancelled': return 'text-red-600 bg-red-50';
+                    case 'completed': return 'text-blue-600 bg-blue-50';
+                    case 'pending': return 'text-yellow-600 bg-yellow-50';
+                    default: return 'text-gray-600 bg-gray-50';
+                }}
+            }};
+
+            resultDiv.innerHTML = `
+                <div class="p-4">
+                    <div class="flex items-center justify-between mb-4">
+                        <h3 class="text-lg font-semibold">Appointment Details</h3>
+                        <span class="px-3 py-1 rounded-full text-xs font-medium ${{getStatusColor(booking.status)}}">
+                            ${{booking.status?.toUpperCase()}}
+                        </span>
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                            <p class="text-sm text-gray-600">Appointment ID</p>
+                            <p class="font-semibold">#${{booking.id}}</p>
+                        </div>
+                        <div>
+                            <p class="text-sm text-gray-600">Customer</p>
+                            <p class="font-semibold">${{booking.customer_name}}</p>
+                        </div>
+                        <div>
+                            <p class="text-sm text-gray-600">Date</p>
+                            <p class="font-semibold">${{formatDate(booking.booking_date)}}</p>
+                        </div>
+                        <div>
+                            <p class="text-sm text-gray-600">Time</p>
+                            <p class="font-semibold">
+                                ${{formatTime(booking.start_time)}} - ${{formatTime(booking.end_time)}}
+                            </p>
+                        </div>
+                        ${{booking.resource_name ? `
+                        <div>
+                            <p class="text-sm text-gray-600">Service/Provider</p>
+                            <p class="font-semibold">${{booking.resource_name}}</p>
+                        </div>
+                        ` : ''}}
+                        <div>
+                            <p class="text-sm text-gray-600">Contact</p>
+                            <p class="font-semibold">${{booking.customer_email}}</p>
+                            ${{booking.customer_phone ? `<p class="text-sm text-gray-500">${{booking.customer_phone}}</p>` : ''}}
+                        </div>
+                    </div>
+                    <div class="pt-4 border-t mt-4">
+                        <p class="text-xs text-gray-500">
+                            Booked on ${{new Date(booking.created_at).toLocaleDateString()}}
+                        </p>
+                    </div>
+                </div>
+            `;
+            
+            resultDiv.classList.remove('hidden');
+        }}
+    </script>
+</body>
+</html>
+    """
+    
+    return html
