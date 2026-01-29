@@ -1683,9 +1683,13 @@ def unified_appointment_portal(bot_id: str, org_id: str, bot_key: Optional[str] 
     """Serve a standalone unified appointment portal (no login required)"""
     base = getattr(settings, 'PUBLIC_API_BASE_URL', '') or ''
     
+    # Ensure base URL is properly formatted (no trailing slash)
+    if base:
+        base = base.rstrip('/')
+    
     # Generate form URLs
-    booking_url = f"{base.rstrip('/')}/api/form/{bot_id}?org_id={org_id}" + (f"&bot_key={bot_key}" if bot_key else "")
-    reschedule_url = f"{base.rstrip('/')}/api/reschedule/{bot_id}?org_id={org_id}" + (f"&bot_key={bot_key}" if bot_key else "")
+    booking_url = f"{base}/api/form/{bot_id}?org_id={org_id}" + (f"&bot_key={bot_key}" if bot_key else "")
+    reschedule_url = f"{base}/api/reschedule/{bot_id}?org_id={org_id}" + (f"&bot_key={bot_key}" if bot_key else "")
     
     html = f"""
 <!DOCTYPE html>
@@ -1883,7 +1887,7 @@ def unified_appointment_portal(bot_id: str, org_id: str, bot_key: Optional[str] 
     </div>
 
     <script>
-        const API_BASE = '{base}';
+        const API_BASE = '{base}'.replace(/\/$/, '') || window.location.origin;
         const ORG_ID = '{org_id}';
         const BOT_KEY = '{bot_key or ""}';
 
@@ -1920,7 +1924,9 @@ def unified_appointment_portal(bot_id: str, org_id: str, bot_key: Optional[str] 
             }}
 
             try {{
-                const response = await fetch(`${{API_BASE}}/api/booking/${{appointmentId}}`);
+                const url = `${{API_BASE}}/api/booking/${{appointmentId}}`;
+                console.log('Status check URL:', url);
+                const response = await fetch(url);
                 
                 if (!response.ok) {{
                     throw new Error('Appointment not found');
@@ -1929,6 +1935,7 @@ def unified_appointment_portal(bot_id: str, org_id: str, bot_key: Optional[str] 
                 const booking = await response.json();
                 showStatusResult(booking);
             }} catch (err) {{
+                console.error('Status check error:', err);
                 showError('statusError', err.message || 'Failed to fetch appointment status');
             }}
         }}
@@ -1952,7 +1959,9 @@ def unified_appointment_portal(bot_id: str, org_id: str, bot_key: Optional[str] 
             }}
 
             try {{
-                const response = await fetch(`${{API_BASE}}/api/bookings/${{appointmentId}}/cancel`, {{
+                const url = `${{API_BASE}}/api/bookings/${{appointmentId}}/cancel`;
+                console.log('Cancel URL:', url);
+                const response = await fetch(url, {{
                     method: 'POST',
                     headers: {{
                         'Content-Type': 'application/json',
