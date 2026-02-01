@@ -1008,6 +1008,7 @@ def create_booking(booking: BookingCreate):
                         description_parts = [
                             f"📅 APPOINTMENT DETAILS",
                             f"{'=' * 40}",
+                            f"Appointment ID: PENDING (will be updated)",
                             f"Customer: {booking.customer_name}",
                             f"Email: {booking.customer_email}",
                         ]
@@ -1167,9 +1168,70 @@ def create_booking(booking: BookingCreate):
             
             print(f"✓ Booking created successfully - ID: {booking_id}, Calendar Event: {external_event_id or 'Not synced'}")
             
+            # Update calendar event with actual appointment ID
+            if external_event_id and svc:
+                try:
+                    from app.services.calendar_google import update_event_description
+                    
+                    # Recreate description with actual booking ID
+                    description_parts = [
+                        f"📅 APPOINTMENT DETAILS",
+                        f"{'=' * 40}",
+                        f"Appointment ID: {booking_id}",
+                        f"Customer: {booking.customer_name}",
+                        f"Email: {booking.customer_email}",
+                    ]
+                    
+                    if booking.customer_phone:
+                        description_parts.append(f"Phone: {booking.customer_phone}")
+                    
+                    if resource_name:
+                        description_parts.append(f"Resource/Staff: {resource_name}")
+                    
+                    # Add custom form fields
+                    if booking.form_data:
+                        description_parts.append(f"\n{'=' * 40}")
+                        description_parts.append("FORM DETAILS")
+                        description_parts.append(f"{'=' * 40}")
+                        for field_name, field_value in booking.form_data.items():
+                            if field_value is not None and field_value != '':
+                                if field_name in field_labels:
+                                    label = field_labels[field_name]['label']
+                                else:
+                                    label = field_name.replace('_', ' ').title()
+                                
+                                if isinstance(field_value, bool):
+                                    display_value = '✓ Yes' if field_value else '✗ No'
+                                elif isinstance(field_value, list):
+                                    display_value = ', '.join(str(v) for v in field_value)
+                                else:
+                                    display_value = str(field_value)
+                                
+                                description_parts.append(f"• {label}: {display_value}")
+                    
+                    if booking.notes:
+                        description_parts.append(f"\n{'=' * 40}")
+                        description_parts.append(f"Additional Notes:")
+                        description_parts.append(f"{booking.notes}")
+                    
+                    description_parts.append(f"\n{'=' * 40}")
+                    description_parts.append(f"Created: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                    
+                    updated_description = "\n".join(description_parts)
+                    
+                    # Update the event
+                    service = svc
+                    event = service.events().get(calendarId=cal_id or 'primary', eventId=external_event_id).execute()
+                    event['description'] = updated_description
+                    service.events().update(calendarId=cal_id or 'primary', eventId=external_event_id, body=event).execute()
+                    print(f"✓ Calendar event updated with Appointment ID: {booking_id}")
+                except Exception as update_error:
+                    print(f"⚠️ Failed to update calendar event with booking ID: {update_error}")
+            
             return {
                 "id": booking_id,
                 "booking_id": booking_id,  # Also return as booking_id for clarity
+                "message": f"Appointment booked successfully! Your appointment ID is: {booking_id}",
                 "created_at": result[1].isoformat(),
                 "status": "confirmed",
                 "calendar_event_id": external_event_id,
