@@ -1773,6 +1773,45 @@ def cancel_booking(booking_id: int, body: BookingCancelBody):
 @router.get("/appointment-portal/{bot_id}", response_class=HTMLResponse)
 def unified_appointment_portal(bot_id: str, org_id: str, bot_key: Optional[str] = None):
     """Serve a standalone unified appointment portal (no login required)"""
+    
+    # Check if calendar is connected
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT calendar_id FROM bot_calendar_oauth 
+                WHERE bot_id = %s AND provider = 'google'
+            """, (bot_id,))
+            cal_row = cur.fetchone()
+            
+            if not cal_row:
+                # Return error page if calendar not connected
+                return HTMLResponse(content=f"""
+                <!DOCTYPE html>
+                <html lang="en">
+                <head>
+                    <meta charset="UTF-8">
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                    <title>Calendar Not Connected</title>
+                    <script src="https://cdn.tailwindcss.com"></script>
+                </head>
+                <body class="bg-gradient-to-br from-red-50 to-orange-50 min-h-screen flex items-center justify-center p-4">
+                    <div class="max-w-md w-full bg-white rounded-2xl shadow-2xl p-8 text-center">
+                        <div class="mb-6">
+                            <svg class="w-20 h-20 mx-auto text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                            </svg>
+                        </div>
+                        <h1 class="text-2xl font-bold text-gray-900 mb-4">Appointment Booking Unavailable</h1>
+                        <p class="text-gray-600 mb-6">The appointment booking system is currently unavailable because the calendar is not connected.</p>
+                        <p class="text-sm text-gray-500">Please contact the administrator to set up the calendar connection.</p>
+                    </div>
+                </body>
+                </html>
+                """, status_code=503)
+    finally:
+        conn.close()
+    
     base = getattr(settings, 'PUBLIC_API_BASE_URL', '') or ''
     
     # Debug: Log the base URL being used

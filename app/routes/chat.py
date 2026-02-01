@@ -4448,6 +4448,25 @@ def _ensure_oauth_table(conn):
             """)
             print("✓ Added timezone column to bot_calendar_oauth")
         except Exception as e:
+            print(f"Note: timezone column might already exist: {e}")
+        
+        # Add calendar_email and calendar_name columns if they don't exist (migration)
+        try:
+            cur.execute("""
+                ALTER TABLE bot_calendar_oauth 
+                ADD COLUMN IF NOT EXISTS calendar_email text
+            """)
+            print("✓ Added calendar_email column to bot_calendar_oauth")
+        except Exception as e:
+            print(f"Note: calendar_email column might already exist: {e}")
+        
+        try:
+            cur.execute("""
+                ALTER TABLE bot_calendar_oauth 
+                ADD COLUMN IF NOT EXISTS calendar_name text
+            """)
+            print("✓ Added calendar_name column to bot_calendar_oauth")
+        except Exception as e:
             print(f"Note: {str(e)}")
 
 def _ensure_booking_settings_table(conn):
@@ -4560,8 +4579,53 @@ def get_calendar_config(bot_id: str, org_id: str, authorization: Optional[str] =
             )
             row = cur.fetchone()
         if not row:
-            return {"provider": None, "calendar_id": None, "timezone": None}
-        return {"provider": row[0], "calendar_id": row[1], "timezone": row[2]}
+            return {"provider": None, "calendar_id": None, "timezone": None, "calendar_email": None, "calendar_name": None}
+        
+        # Try to get calendar details from OAuth table
+        calendar_email = None
+        calendar_name = None
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "select calendar_email, calendar_name from bot_calendar_oauth where (org_id=%s or org_id::text=%s) and bot_id=%s and provider=%s",
+                    (normalize_org_id(org_id), org_id, bot_id, row[0]),
+                )
+                oauth_row = cur.fetchone()
+                if oauth_row:
+                    calendar_email = oauth_row[0]
+                    calendar_name = oauth_row[1]
+        except Exception:
+            pass
+        
+        return {
+            "provider": row[0], 
+            "calendar_id": row[1], 
+            "timezone": row[2],
+            "calendar_email": calendar_email,
+            "calendar_name": calendar_name
+        }
+    finally:
+        conn.close()
+
+@router.post("/bots/{bot_id}/calendar/disconnect")
+def disconnect_calendar(bot_id: str, org_id: str, authorization: Optional[str] = Header(default=None)):
+    _require_auth(authorization, org_id)
+    conn = get_conn()
+    try:
+        _ensure_calendar_settings_table(conn)
+        _ensure_oauth_table(conn)
+        with conn.cursor() as cur:
+            # Delete from calendar settings
+            cur.execute(
+                "delete from bot_calendar_settings where (org_id=%s or org_id::text=%s) and bot_id=%s",
+                (normalize_org_id(org_id), org_id, bot_id),
+            )
+            # Delete from oauth table
+            cur.execute(
+                "delete from bot_calendar_oauth where (org_id=%s or org_id::text=%s) and bot_id=%s",
+                (normalize_org_id(org_id), org_id, bot_id),
+            )
+        return {"success": True, "message": "Calendar disconnected successfully"}
     finally:
         conn.close()
 
@@ -4607,16 +4671,31 @@ def google_oauth_callback(code: str, state: Optional[str] = None, redirect_uri: 
         at = _encrypt(data.get("access_token"))
         rt = _encrypt(data.get("refresh_token")) if data.get("refresh_token") else None
         exp = data.get("expiry")
+        
+        # Fetch calendar email and name from Google
+        calendar_email = None
+        calendar_name = None
+        try:
+            from app.services.calendar_google import get_calendar_service
+            service = get_calendar_service(normalize_org_id(org_id), bot_id)
+            if service:
+                # Get primary calendar details
+                calendar_info = service.calendars().get(calendarId='primary').execute()
+                calendar_email = calendar_info.get('id')  # Calendar ID is usually the email
+                calendar_name = calendar_info.get('summary', 'Primary Calendar')
+        except Exception as e:
+            print(f"Could not fetch calendar details: {e}")
+        
         with conn.cursor() as cur:
             cur.execute(
                 """
-                insert into bot_calendar_oauth (org_id, bot_id, provider, access_token_enc, refresh_token_enc, token_expiry, calendar_id)
-                values (%s,%s,%s,%s,%s,%s,%s)
+                insert into bot_calendar_oauth (org_id, bot_id, provider, access_token_enc, refresh_token_enc, token_expiry, calendar_id, calendar_email, calendar_name)
+                values (%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 on conflict (org_id, bot_id, provider)
-                do update set access_token_enc=excluded.access_token_enc, refresh_token_enc=coalesce(excluded.refresh_token_enc, bot_calendar_oauth.refresh_token_enc), token_expiry=excluded.token_expiry, calendar_id=coalesce(bot_calendar_oauth.calendar_id, excluded.calendar_id), updated_at=now()
+                do update set access_token_enc=excluded.access_token_enc, refresh_token_enc=coalesce(excluded.refresh_token_enc, bot_calendar_oauth.refresh_token_enc), token_expiry=excluded.token_expiry, calendar_id=coalesce(bot_calendar_oauth.calendar_id, excluded.calendar_id), calendar_email=excluded.calendar_email, calendar_name=excluded.calendar_name, updated_at=now()
                 returning calendar_id
                 """,
-                (normalize_org_id(org_id), bot_id, "google", at, rt, exp, "primary"),
+                (normalize_org_id(org_id), bot_id, "google", at, rt, exp, "primary", calendar_email, calendar_name),
             )
             row = cur.fetchone()
             cal_id = row[0] if row else "primary"
@@ -5162,6 +5241,53 @@ def booking_cancel(bot_id: str, appointment_id: int, body: CancelBody, authoriza
 
 @router.get("/form/{bot_id}", response_class=HTMLResponse)
 def booking_form(bot_id: str, org_id: str, bot_key: Optional[str] = None):
+    # Check if calendar is connected
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT calendar_id FROM bot_calendar_oauth 
+                WHERE (org_id=%s or org_id::text=%s) AND bot_id = %s AND provider = 'google'
+            """, (normalize_org_id(org_id), org_id, bot_id))
+            cal_row = cur.fetchone()
+            
+            if not cal_row:
+                # Return error page if calendar not connected
+                return HTMLResponse(content="""
+                <!DOCTYPE html>
+                <html lang="en">
+                <head>
+                    <meta charset="UTF-8">
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                    <title>Calendar Not Connected</title>
+                    <style>
+                        * { margin: 0; padding: 0; box-sizing: border-box; }
+                        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: linear-gradient(135deg, #ef4444 0%, #f97316 100%); min-height: 100vh; display: flex; align-items: center; justify-center; padding: 20px; }
+                        .container { background: #fff; border-radius: 16px; box-shadow: 0 20px 60px rgba(0,0,0,0.3); max-width: 500px; width: 100%; padding: 40px; text-align: center; }
+                        .icon { width: 80px; height: 80px; margin: 0 auto 24px; background: #fee2e2; border-radius: 50%; display: flex; align-items: center; justify-content: center; }
+                        .icon svg { width: 40px; height: 40px; color: #dc2626; }
+                        h1 { font-size: 24px; font-weight: 700; color: #1a1a1a; margin-bottom: 12px; }
+                        p { font-size: 15px; color: #666; line-height: 1.6; margin-bottom: 8px; }
+                        .note { font-size: 13px; color: #999; margin-top: 20px; padding-top: 20px; border-top: 1px solid #eee; }
+                    </style>
+                </head>
+                <body>
+                    <div class="container">
+                        <div class="icon">
+                            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                            </svg>
+                        </div>
+                        <h1>Appointment Booking Unavailable</h1>
+                        <p>The appointment booking system is currently unavailable because the calendar is not connected.</p>
+                        <p class="note">Please contact the administrator to set up the calendar connection.</p>
+                    </div>
+                </body>
+                </html>
+                """, status_code=503)
+    finally:
+        conn.close()
+    
     base = getattr(settings, 'PUBLIC_API_BASE_URL', '') or ''
     api_url = base.rstrip('/')
     html = (
