@@ -1008,11 +1008,11 @@ def create_booking(booking: BookingCreate):
                         
                         print(f"📋 Event summary: {summary}")
                         
-                        # Build detailed description with all form data
+                        # Build detailed description with all form data (email-friendly)
                         description_parts = [
-                            f"📅 APPOINTMENT DETAILS",
-                            f"{'=' * 40}",
-                            f"Appointment ID: PENDING (will be updated)",
+                            "Appointment Details",
+                            "",
+                            "Appointment ID: PENDING (will be updated)",
                             f"Customer: {booking.customer_name}",
                             f"Email: {booking.customer_email}",
                         ]
@@ -1042,9 +1042,9 @@ def create_booking(booking: BookingCreate):
                         # Add all custom form fields with proper labels
                         if booking.form_data:
                             print(f"📝 Processing {len(booking.form_data)} form fields...")
-                            description_parts.append(f"\n{'=' * 40}")
-                            description_parts.append("FORM DETAILS")
-                            description_parts.append(f"{'=' * 40}")
+                            description_parts.append("")
+                            description_parts.append("Form Details")
+                            description_parts.append("")
                             
                             for field_name, field_value in booking.form_data.items():
                                 print(f"   Field: {field_name} = {field_value}")
@@ -1063,17 +1063,17 @@ def create_booking(booking: BookingCreate):
                                     else:
                                         display_value = str(field_value)
                                     
-                                    description_parts.append(f"• {label}: {display_value}")
+                                    description_parts.append(f"- {label}: {display_value}")
                                     print(f"   Added to description: {label} = {display_value}")
                         else:
                             print("⚠ No form data provided in booking")
                         
                         if booking.notes:
-                            description_parts.append(f"\n{'=' * 40}")
-                            description_parts.append(f"Additional Notes:")
+                            description_parts.append("")
+                            description_parts.append("Additional Notes")
                             description_parts.append(f"{booking.notes}")
                         
-                        description_parts.append(f"\n{'=' * 40}")
+                        description_parts.append("")
                         description_parts.append(f"Created: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
                         
                         event_description = "\n".join(description_parts)
@@ -1193,10 +1193,10 @@ def create_booking(booking: BookingCreate):
                     except Exception:
                         pass
                     
-                    # Recreate description with actual booking ID
+                    # Recreate description with actual booking ID (email-friendly)
                     description_parts = [
-                        f"📅 APPOINTMENT DETAILS",
-                        f"{'=' * 40}",
+                        "Appointment Details",
+                        "",
                         f"Appointment ID: {booking_id}",
                         f"Customer: {booking.customer_name}",
                         f"Email: {booking.customer_email}",
@@ -1210,9 +1210,9 @@ def create_booking(booking: BookingCreate):
                     
                     # Add custom form fields
                     if booking.form_data:
-                        description_parts.append(f"\n{'=' * 40}")
-                        description_parts.append("FORM DETAILS")
-                        description_parts.append(f"{'=' * 40}")
+                        description_parts.append("")
+                        description_parts.append("Form Details")
+                        description_parts.append("")
                         for field_name, field_value in booking.form_data.items():
                             if field_value is not None and field_value != '':
                                 if field_name in field_labels:
@@ -1227,14 +1227,14 @@ def create_booking(booking: BookingCreate):
                                 else:
                                     display_value = str(field_value)
                                 
-                                description_parts.append(f"• {label}: {display_value}")
+                                description_parts.append(f"- {label}: {display_value}")
                     
                     if booking.notes:
-                        description_parts.append(f"\n{'=' * 40}")
-                        description_parts.append(f"Additional Notes:")
+                        description_parts.append("")
+                        description_parts.append("Additional Notes")
                         description_parts.append(f"{booking.notes}")
                     
-                    description_parts.append(f"\n{'=' * 40}")
+                    description_parts.append("")
                     description_parts.append(f"Created: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
                     
                     updated_description = "\n".join(description_parts)
