@@ -854,6 +854,8 @@ def create_booking(booking: BookingCreate):
     """Create a new booking with dynamic form data and sync to Google Calendar"""
     conn = get_conn()
     external_event_id = None
+    calendar_service = None  # Store service for later update
+    calendar_id = None  # Store calendar ID for later update
     
     try:
         with conn.cursor() as cur:
@@ -923,6 +925,7 @@ def create_booking(booking: BookingCreate):
                     print(f"⚠ No Google Calendar connected for bot {booking.bot_id}")
                 else:
                     cal_id, at_enc, rt_enc = cal_row
+                    calendar_id = cal_id  # Store for later use
                     print(f"📅 Calendar found: {cal_id or 'primary'}")
                     
                     # Import calendar functions
@@ -958,6 +961,7 @@ def create_booking(booking: BookingCreate):
                         print("   Please reconnect your Google Calendar in bot settings")
                     else:
                         print("✓ Google Calendar service built successfully")
+                        calendar_service = svc  # Store for later update
                     
                     if svc:
                         # Get timezone from calendar config or booking settings
@@ -1169,9 +1173,25 @@ def create_booking(booking: BookingCreate):
             print(f"✓ Booking created successfully - ID: {booking_id}, Calendar Event: {external_event_id or 'Not synced'}")
             
             # Update calendar event with actual appointment ID
-            if external_event_id and svc:
+            if external_event_id and calendar_service:
                 try:
-                    from app.services.calendar_google import update_event_description
+                    print(f"🔄 Updating calendar event with Appointment ID: {booking_id}")
+                    
+                    # Get field labels from form configuration for better display
+                    field_labels = {}
+                    try:
+                        cur.execute("""
+                            select field_name, field_label, field_type
+                            from form_fields
+                            where form_config_id = %s and is_active = true
+                        """, (form_config_id,))
+                        for field_row in cur.fetchall():
+                            field_labels[field_row[0]] = {
+                                'label': field_row[1],
+                                'type': field_row[2]
+                            }
+                    except Exception:
+                        pass
                     
                     # Recreate description with actual booking ID
                     description_parts = [
@@ -1219,14 +1239,18 @@ def create_booking(booking: BookingCreate):
                     
                     updated_description = "\n".join(description_parts)
                     
-                    # Update the event
-                    service = svc
-                    event = service.events().get(calendarId=cal_id or 'primary', eventId=external_event_id).execute()
+                    # Update the event description
+                    cal_id_to_use = calendar_id or 'primary'
+                    event = calendar_service.events().get(calendarId=cal_id_to_use, eventId=external_event_id).execute()
                     event['description'] = updated_description
-                    service.events().update(calendarId=cal_id or 'primary', eventId=external_event_id, body=event).execute()
-                    print(f"✓ Calendar event updated with Appointment ID: {booking_id}")
+                    calendar_service.events().update(calendarId=cal_id_to_use, eventId=external_event_id, body=event).execute()
+                    print(f"✓ Calendar event updated successfully with Appointment ID: {booking_id}")
                 except Exception as update_error:
                     print(f"⚠️ Failed to update calendar event with booking ID: {update_error}")
+                    import traceback
+                    traceback.print_exc()
+            elif external_event_id:
+                print(f"⚠️ Cannot update calendar event - service not available")
             
             return {
                 "id": booking_id,
