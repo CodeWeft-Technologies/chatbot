@@ -51,7 +51,7 @@ class Settings(BaseSettings):
                 pass
         return [o.strip() for o in vs.split(",") if o.strip()]
 
-    model_config = SettingsConfigDict(env_file=str(ENV_PATH), env_file_encoding="utf-8", case_sensitive=False)
+    model_config = SettingsConfigDict(env_file=str(ENV_PATH), env_file_encoding="utf-8", case_sensitive=False, extra='allow')
 
 
 # Load .env and force-populate os.environ so pydantic sees values even in reloader subprocess

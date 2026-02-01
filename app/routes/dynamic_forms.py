@@ -1683,6 +1683,9 @@ def unified_appointment_portal(bot_id: str, org_id: str, bot_key: Optional[str] 
     """Serve a standalone unified appointment portal (no login required)"""
     base = getattr(settings, 'PUBLIC_API_BASE_URL', '') or ''
     
+    # Debug: Log the base URL being used
+    print(f"[DEBUG] Appointment Portal - Using base URL: {base}")
+    
     # Ensure base URL is properly formatted (no trailing slash)
     if base:
         base = base.rstrip('/')
@@ -1709,6 +1712,7 @@ def unified_appointment_portal(bot_id: str, org_id: str, bot_key: Optional[str] 
         .tab-button {{
             background-color: transparent;
             color: #6b7280;
+            white-space: nowrap;
         }}
         .tab-button:hover {{
             background-color: #f3f4f6;
@@ -1716,31 +1720,42 @@ def unified_appointment_portal(bot_id: str, org_id: str, bot_key: Optional[str] 
         .tab-button.active:hover {{
             background-color: #2563eb;
         }}
+        
+        /* Mobile responsive styles */
+        @media (max-width: 640px) {{
+            .tab-button {{
+                font-size: 0.875rem;
+                padding: 0.5rem 0.75rem;
+            }}
+            .tab-button span.icon {{
+                display: none;
+            }}
+        }}
     </style>
 </head>
 <body class="min-h-screen bg-gray-50">
-    <div class="max-w-4xl mx-auto px-4 py-8">
+    <div class="max-w-4xl mx-auto px-4 sm:px-6 py-4 sm:py-8">
         <!-- Header -->
-        <div class="text-center mb-8">
-            <h1 class="text-3xl font-bold text-gray-900 mb-2">Appointment Portal</h1>
-            <p class="text-gray-600">Book, reschedule, check status, or cancel your appointments</p>
+        <div class="text-center mb-6 sm:mb-8">
+            <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 mb-2">Appointment Portal</h1>
+            <p class="text-sm sm:text-base text-gray-600">Book, reschedule, check status, or cancel your appointments</p>
         </div>
 
         <!-- Navigation Tabs -->
-        <div class="flex justify-center mb-8">
-            <div class="bg-white rounded-lg p-1 shadow-sm border">
+        <div class="flex justify-center mb-6 sm:mb-8 overflow-x-auto">
+            <div class="bg-white rounded-lg p-1 shadow-sm border inline-flex">
                 <div class="flex gap-1">
-                    <button class="tab-button active px-6 py-2 rounded-md font-medium transition-colors" onclick="showTab('book')">
-                        📅 Book
+                    <button class="tab-button active px-3 sm:px-6 py-2 rounded-md font-medium transition-colors text-sm sm:text-base" onclick="showTab('book')">
+                        <span class="icon">📅 </span>Book
                     </button>
-                    <button class="tab-button px-6 py-2 rounded-md font-medium transition-colors" onclick="showTab('reschedule')">
-                        🔄 Reschedule
+                    <button class="tab-button px-3 sm:px-6 py-2 rounded-md font-medium transition-colors text-sm sm:text-base" onclick="showTab('reschedule')">
+                        <span class="icon">🔄 </span>Reschedule
                     </button>
-                    <button class="tab-button px-6 py-2 rounded-md font-medium transition-colors" onclick="showTab('status')">
-                        📋 Status
+                    <button class="tab-button px-3 sm:px-6 py-2 rounded-md font-medium transition-colors text-sm sm:text-base" onclick="showTab('status')">
+                        <span class="icon">📋 </span>Status
                     </button>
-                    <button class="tab-button px-6 py-2 rounded-md font-medium transition-colors" onclick="showTab('cancel')">
-                        ❌ Cancel
+                    <button class="tab-button px-3 sm:px-6 py-2 rounded-md font-medium transition-colors text-sm sm:text-base" onclick="showTab('cancel')">
+                        <span class="icon">❌ </span>Cancel
                     </button>
                 </div>
             </div>
@@ -1749,14 +1764,14 @@ def unified_appointment_portal(bot_id: str, org_id: str, bot_key: Optional[str] 
         <!-- Content -->
         <div class="bg-white rounded-lg shadow-sm border">
             <!-- Book Tab -->
-            <div id="book" class="tab-content active p-8 text-center">
+            <div id="book" class="tab-content active p-4 sm:p-8 text-center">
                 <div class="max-w-md mx-auto">
                     <div class="mb-6">
-                        <div class="w-16 h-16 mx-auto mb-4 bg-blue-100 rounded-full flex items-center justify-center">
-                            <span class="text-2xl">📅</span>
+                        <div class="w-14 h-14 sm:w-16 sm:h-16 mx-auto mb-4 bg-blue-100 rounded-full flex items-center justify-center">
+                            <span class="text-xl sm:text-2xl">📅</span>
                         </div>
-                        <h2 class="text-2xl font-semibold mb-2">Book New Appointment</h2>
-                        <p class="text-gray-600 mb-6">
+                        <h2 class="text-xl sm:text-2xl font-semibold mb-2">Book New Appointment</h2>
+                        <p class="text-sm sm:text-base text-gray-600 mb-6">
                             Schedule your appointment by filling out our booking form
                         </p>
                     </div>
@@ -1765,26 +1780,26 @@ def unified_appointment_portal(bot_id: str, org_id: str, bot_key: Optional[str] 
                         href="{booking_url}"
                         target="_blank"
                         rel="noopener noreferrer"
-                        class="inline-block w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-4 px-6 rounded-lg transition-colors shadow-md hover:shadow-lg"
+                        class="inline-block w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 sm:py-4 px-4 sm:px-6 rounded-lg transition-colors shadow-md hover:shadow-lg text-sm sm:text-base"
                     >
                         📅 Open Booking Form
                     </a>
                     
-                    <p class="text-sm text-gray-500 mt-4">
+                    <p class="text-xs sm:text-sm text-gray-500 mt-4">
                         Opens in a new window • No login required
                     </p>
                 </div>
             </div>
 
             <!-- Reschedule Tab -->
-            <div id="reschedule" class="tab-content p-8 text-center">
+            <div id="reschedule" class="tab-content p-4 sm:p-8 text-center">
                 <div class="max-w-md mx-auto">
                     <div class="mb-6">
-                        <div class="w-16 h-16 mx-auto mb-4 bg-orange-100 rounded-full flex items-center justify-center">
-                            <span class="text-2xl">🔄</span>
+                        <div class="w-14 h-14 sm:w-16 sm:h-16 mx-auto mb-4 bg-orange-100 rounded-full flex items-center justify-center">
+                            <span class="text-xl sm:text-2xl">🔄</span>
                         </div>
-                        <h2 class="text-2xl font-semibold mb-2">Reschedule Appointment</h2>
-                        <p class="text-gray-600 mb-6">
+                        <h2 class="text-xl sm:text-2xl font-semibold mb-2">Reschedule Appointment</h2>
+                        <p class="text-sm sm:text-base text-gray-600 mb-6">
                             Change your existing appointment to a new date and time
                         </p>
                     </div>
@@ -1793,20 +1808,20 @@ def unified_appointment_portal(bot_id: str, org_id: str, bot_key: Optional[str] 
                         href="{reschedule_url}"
                         target="_blank"
                         rel="noopener noreferrer"
-                        class="inline-block w-full bg-orange-600 hover:bg-orange-700 text-white font-semibold py-4 px-6 rounded-lg transition-colors shadow-md hover:shadow-lg"
+                        class="inline-block w-full bg-orange-600 hover:bg-orange-700 text-white font-semibold py-3 sm:py-4 px-4 sm:px-6 rounded-lg transition-colors shadow-md hover:shadow-lg text-sm sm:text-base"
                     >
                         🔄 Open Reschedule Form
                     </a>
                     
-                    <p class="text-sm text-gray-500 mt-4">
+                    <p class="text-xs sm:text-sm text-gray-500 mt-4">
                         Opens in a new window • You will need your appointment ID
                     </p>
                 </div>
             </div>
 
             <!-- Status Tab -->
-            <div id="status" class="tab-content p-6">
-                <h2 class="text-xl font-semibold mb-6">Check Appointment Status</h2>
+            <div id="status" class="tab-content p-4 sm:p-6">
+                <h2 class="text-lg sm:text-xl font-semibold mb-4 sm:mb-6">Check Appointment Status</h2>
                 
                 <div class="max-w-md mx-auto space-y-4">
                     <div>
@@ -1817,13 +1832,13 @@ def unified_appointment_portal(bot_id: str, org_id: str, bot_key: Optional[str] 
                             type="text"
                             id="statusAppointmentId"
                             placeholder="Enter your appointment ID (e.g., 12345)" 
-                            class="w-full px-3 py-2 border border-gray-300 rounded-md text-center focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                            class="w-full px-3 py-2 border border-gray-300 rounded-md text-center focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm sm:text-base"
                         />
                     </div>
                     
                     <button 
                         onclick="checkStatus()"
-                        class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-md transition-colors"
+                        class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2.5 sm:py-2 px-4 rounded-md transition-colors text-sm sm:text-base"
                     >
                         Check Status
                     </button>
@@ -1839,12 +1854,12 @@ def unified_appointment_portal(bot_id: str, org_id: str, bot_key: Optional[str] 
             </div>
 
             <!-- Cancel Tab -->
-            <div id="cancel" class="tab-content p-6">
-                <h2 class="text-xl font-semibold mb-6">Cancel Appointment</h2>
+            <div id="cancel" class="tab-content p-4 sm:p-6">
+                <h2 class="text-lg sm:text-xl font-semibold mb-4 sm:mb-6">Cancel Appointment</h2>
                 
                 <div class="max-w-md mx-auto space-y-4">
-                    <div class="bg-red-50 border border-red-200 rounded-md p-4 mb-4">
-                        <p class="text-red-800 text-sm">
+                    <div class="bg-red-50 border border-red-200 rounded-md p-3 sm:p-4 mb-4">
+                        <p class="text-red-800 text-xs sm:text-sm">
                             ⚠️ <strong>Warning:</strong> Cancelling an appointment cannot be undone. 
                             Please make sure you have the correct appointment ID.
                         </p>
@@ -1858,13 +1873,13 @@ def unified_appointment_portal(bot_id: str, org_id: str, bot_key: Optional[str] 
                             type="text"
                             id="cancelAppointmentId"
                             placeholder="Enter your appointment ID (e.g., 12345)" 
-                            class="w-full px-3 py-2 border border-gray-300 rounded-md text-center focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent"
+                            class="w-full px-3 py-2 border border-gray-300 rounded-md text-center focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent text-sm sm:text-base"
                         />
                     </div>
                     
                     <button 
                         onclick="cancelAppointment()"
-                        class="w-full bg-red-600 hover:bg-red-700 text-white font-semibold py-2 px-4 rounded-md transition-colors"
+                        class="w-full bg-red-600 hover:bg-red-700 text-white font-semibold py-2.5 sm:py-2 px-4 rounded-md transition-colors text-sm sm:text-base"
                     >
                         Cancel Appointment
                     </button>
@@ -1881,7 +1896,7 @@ def unified_appointment_portal(bot_id: str, org_id: str, bot_key: Optional[str] 
         </div>
 
         <!-- Footer -->
-        <div class="text-center mt-8 text-sm text-gray-500">
+        <div class="text-center mt-6 sm:mt-8 text-xs sm:text-sm text-gray-500 px-4">
             <p>Need help? Contact our support team for assistance.</p>
         </div>
     </div>
