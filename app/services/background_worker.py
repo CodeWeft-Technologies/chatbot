@@ -152,7 +152,9 @@ async def _process_job(job_id: str, org_id: str, bot_id: str, filename: str,
         
         # Get Python executable from current environment
         python_exe = sys.executable
-        script_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'process_single_job.py')
+        # Go up 3 levels: background_worker.py -> services -> app -> backend root
+        backend_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        script_path = os.path.join(backend_root, 'process_single_job.py')
         
         # Convert UUIDs to strings for subprocess
         job_id_str = str(job_id)
