@@ -10,6 +10,9 @@ import psycopg
 from uuid import UUID
 import gc
 import torch
+import ctypes
+import sys
+import psutil
 from app.config import settings
 from app.services.enhanced_rag import process_multimodal_file
 
@@ -154,6 +157,13 @@ async def _process_job(job_id: str, org_id: str, bot_id: str, filename: str,
         logger.info(msg)
         print(msg)
         
+        # Track memory before processing
+        process = psutil.Process()
+        mem_before_mb = process.memory_info().rss / 1024 / 1024
+        msg = f"[WORKER-{job_id}] 📊 Memory before processing: {mem_before_mb:.1f}MB"
+        logger.info(msg)
+        print(msg)
+        
         # Process multimodal file
         msg = f"[WORKER-{job_id}] 🧠 Calling process_multimodal_file..."
         logger.info(msg)
@@ -237,14 +247,28 @@ async def _process_job(job_id: str, org_id: str, bot_id: str, filename: str,
             from app.services.enhanced_rag import unload_model
             unload_model()
             
-            # Force garbage collection to release PyTorch/Unstructured memory
-            gc.collect()
-            
-            # Clear PyTorch CUDA cache if available
+            # 1. Clear PyTorch CUDA cache first
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+                torch.cuda.synchronize()  # Wait for GPU operations to complete
             
-            msg = f"[WORKER-{job_id}] 🧹 Memory cleanup completed"
+            # 2. Multiple rounds of aggressive garbage collection
+            # Collect all generations (0, 1, 2) to free deeply nested objects
+            for _ in range(3):
+                gc.collect(generation=2)
+            
+            # 3. Force malloc trim on Linux to release memory to OS
+            try:
+                if sys.platform == 'linux':
+                    libc = ctypes.CDLL('libc.so.6')
+                    libc.malloc_trim(0)  # Release all freeable memory
+            except Exception:
+                pass  # Skip on Windows or if unavailable
+            
+            # 4. Verify memory was freed
+            mem_after_mb = process.memory_info().rss / 1024 / 1024
+            freed_mb = mem_before_mb - mem_after_mb
+            msg = f"[WORKER-{job_id}] 🧹 Memory after cleanup: {mem_after_mb:.1f}MB (freed: {freed_mb:.1f}MB)"
             logger.info(msg)
             print(msg)
         except Exception as e:
