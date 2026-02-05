@@ -43,19 +43,13 @@ async def process_jobs_concurrently():
     MAX_CONCURRENT_JOBS = 1  # Only 1 job at a time for memory safety
     active_tasks = set()
     
-    # Process jobs until queue is empty (don't run forever)
-    while True:
+    while True:  # Keep running forever - idle cost is minimal
         try:
             # Check for pending jobs and start new tasks if slots available
             while len(active_tasks) < MAX_CONCURRENT_JOBS:
                 job = _get_next_pending_job()
                 if not job:
-                    # No more jobs - exit if no active tasks either
-                    if len(active_tasks) == 0:
-                        print("[WORKER] ✅ No more jobs in queue. Exiting worker.")
-                        logger.info("[WORKER] ✅ No more jobs in queue. Exiting worker.")
-                        return  # Exit cleanly
-                    break  # Wait for active tasks to complete
+                    break  # No more pending jobs
                 
                 job_id = job[0]
                 # Create task for this job
