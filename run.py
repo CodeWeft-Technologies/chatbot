@@ -4,6 +4,12 @@ import os
 import subprocess
 import sys
 
+# CRITICAL: Disable Unstructured model caching to prevent memory leaks
+os.environ['UNSTRUCTURED_CACHE_DIR'] = '/tmp'
+os.environ['TRANSFORMERS_CACHE'] = '/tmp'
+os.environ['HF_HOME'] = '/tmp'
+os.environ['TORCH_HOME'] = '/tmp'
+
 port = os.getenv('PORT', '8000')
 
 # Run uvicorn with the PORT from environment

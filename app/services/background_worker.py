@@ -39,7 +39,7 @@ async def start_background_worker():
 
 async def process_jobs_concurrently():
     """Process multiple jobs concurrently with a max limit."""
-    MAX_CONCURRENT_JOBS = 3  # Process up to 2 jobs simultaneously (reduced for Railway)
+    MAX_CONCURRENT_JOBS = 3  # CRITICAL: Only 1 job at a time to prevent memory stacking
     active_tasks = set()
     
     while True:
@@ -245,19 +245,44 @@ async def _process_job(job_id: str, org_id: str, bot_id: str, filename: str,
         # Unload model to free memory
         try:
             from app.services.enhanced_rag import unload_model
+            import importlib
             unload_model()
             
-            # 1. Clear PyTorch CUDA cache first
+            # 1. Clear Unstructured's global model cache
+            try:
+                import unstructured
+                # Clear any cached models in unstructured's global state
+                if hasattr(unstructured, 'partition'):
+                    if hasattr(unstructured.partition, '_model_cache'):
+                        unstructured.partition._model_cache.clear()
+            except Exception:
+                pass
+            
+            # 2. Clear transformers model cache
+            try:
+                import transformers
+                if hasattr(transformers, 'models'):
+                    # Force reload of modules to clear cached models
+                    for module_name in list(sys.modules.keys()):
+                        if 'transformers' in module_name or 'unstructured' in module_name:
+                            try:
+                                del sys.modules[module_name]
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+            
+            # 3. Clear PyTorch CUDA cache
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 torch.cuda.synchronize()  # Wait for GPU operations to complete
             
-            # 2. Multiple rounds of aggressive garbage collection
+            # 4. Multiple rounds of aggressive garbage collection
             # Collect all generations (0, 1, 2) to free deeply nested objects
             for _ in range(3):
                 gc.collect(generation=2)
             
-            # 3. Force malloc trim on Linux to release memory to OS
+            # 5. Force malloc trim on Linux to release memory to OS
             try:
                 if sys.platform == 'linux':
                     libc = ctypes.CDLL('libc.so.6')
@@ -265,7 +290,7 @@ async def _process_job(job_id: str, org_id: str, bot_id: str, filename: str,
             except Exception:
                 pass  # Skip on Windows or if unavailable
             
-            # 4. Verify memory was freed
+            # 6. Verify memory was freed
             mem_after_mb = process.memory_info().rss / 1024 / 1024
             freed_mb = mem_before_mb - mem_after_mb
             msg = f"[WORKER-{job_id}] 🧹 Memory after cleanup: {mem_after_mb:.1f}MB (freed: {freed_mb:.1f}MB)"
