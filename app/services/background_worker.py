@@ -8,6 +8,8 @@ import asyncio
 import logging
 import psycopg
 from uuid import UUID
+import gc
+import torch
 from app.config import settings
 from app.services.enhanced_rag import process_multimodal_file
 
@@ -34,7 +36,7 @@ async def start_background_worker():
 
 async def process_jobs_concurrently():
     """Process multiple jobs concurrently with a max limit."""
-    MAX_CONCURRENT_JOBS = 3  # Process up to 3 jobs simultaneously
+    MAX_CONCURRENT_JOBS = 3  # Process up to 2 jobs simultaneously (reduced for Railway)
     active_tasks = set()
     
     while True:
@@ -234,6 +236,17 @@ async def _process_job(job_id: str, org_id: str, bot_id: str, filename: str,
         try:
             from app.services.enhanced_rag import unload_model
             unload_model()
+            
+            # Force garbage collection to release PyTorch/Unstructured memory
+            gc.collect()
+            
+            # Clear PyTorch CUDA cache if available
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
+            msg = f"[WORKER-{job_id}] 🧹 Memory cleanup completed"
+            logger.info(msg)
+            print(msg)
         except Exception as e:
             logger.warning(f"[WORKER-{job_id}] Failed to unload model: {e}")
     
