@@ -13,8 +13,9 @@ import torch
 import ctypes
 import sys
 import psutil
+import subprocess
+import os
 from app.config import settings
-from app.services.enhanced_rag import process_multimodal_file
 
 logger = logging.getLogger(__name__)
 
@@ -39,16 +40,22 @@ async def start_background_worker():
 
 async def process_jobs_concurrently():
     """Process multiple jobs concurrently with a max limit."""
-    MAX_CONCURRENT_JOBS = 3  # CRITICAL: Only 1 job at a time to prevent memory stacking
+    MAX_CONCURRENT_JOBS = 1  # Only 1 job at a time for memory safety
     active_tasks = set()
     
+    # Process jobs until queue is empty (don't run forever)
     while True:
         try:
             # Check for pending jobs and start new tasks if slots available
             while len(active_tasks) < MAX_CONCURRENT_JOBS:
                 job = _get_next_pending_job()
                 if not job:
-                    break  # No more pending jobs
+                    # No more jobs - exit if no active tasks either
+                    if len(active_tasks) == 0:
+                        print("[WORKER] ✅ No more jobs in queue. Exiting worker.")
+                        logger.info("[WORKER] ✅ No more jobs in queue. Exiting worker.")
+                        return  # Exit cleanly
+                    break  # Wait for active tasks to complete
                 
                 job_id = job[0]
                 # Create task for this job
@@ -134,19 +141,6 @@ async def _process_job(job_id: str, org_id: str, bot_id: str, filename: str,
         logger.info(msg)
         print(msg)
         
-        # Fetch file bytes from database
-        with psycopg.connect(settings.SUPABASE_DB_DSN) as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT file_content FROM ingest_jobs WHERE id = %s", (job_id,))
-                row = cur.fetchone()
-                if not row:
-                    raise Exception(f"Job {job_id} not found in database")
-                file_bytes = row[0]
-        
-        msg = f"[WORKER-{job_id}] ✓ Retrieved {len(file_bytes)} bytes from database"
-        logger.info(msg)
-        print(msg)
-        
         # Update progress: extracting
         with psycopg.connect(settings.SUPABASE_DB_DSN) as conn:
             with conn.cursor() as cur:
@@ -157,25 +151,49 @@ async def _process_job(job_id: str, org_id: str, bot_id: str, filename: str,
         logger.info(msg)
         print(msg)
         
-        # Track memory before processing
-        process = psutil.Process()
-        mem_before_mb = process.memory_info().rss / 1024 / 1024
-        msg = f"[WORKER-{job_id}] 📊 Memory before processing: {mem_before_mb:.1f}MB"
+        # Run processing in isolated subprocess for guaranteed memory cleanup
+        msg = f"[WORKER-{job_id}] 🚀 Starting subprocess for complete memory isolation..."
         logger.info(msg)
         print(msg)
         
-        # Process multimodal file
-        msg = f"[WORKER-{job_id}] 🧠 Calling process_multimodal_file..."
-        logger.info(msg)
-        print(msg)
-        inserted, skipped = await process_multimodal_file(
-            filename=filename,
-            file_bytes=file_bytes,
-            org_id=org_id,
-            bot_id=bot_id,
+        # Get Python executable from current environment
+        python_exe = sys.executable
+        script_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'process_single_job.py')
+        
+        # Run subprocess and capture output
+        proc = await asyncio.create_subprocess_exec(
+            python_exe, script_path, job_id, org_id, bot_id, filename,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=os.environ.copy()
         )
         
-        msg = f"[WORKER-{job_id}] ✓ Extraction complete: {inserted} inserted, {skipped} skipped"
+        stdout, stderr = await proc.communicate()
+        
+        # Parse result from subprocess
+        output = stdout.decode()
+        error_output = stderr.decode()
+        
+        if error_output:
+            print(f"[WORKER-{job_id}] Subprocess stderr: {error_output}")
+        
+        # Look for RESULT line in output
+        inserted = 0
+        skipped = 0
+        for line in output.split('\n'):
+            if line.startswith('RESULT|'):
+                parts = line.split('|')
+                inserted = int(parts[1])
+                skipped = int(parts[2])
+                break
+            elif line.startswith('ERROR|'):
+                error_msg = line.split('|', 1)[1]
+                raise Exception(f"Subprocess error: {error_msg}")
+        
+        if proc.returncode != 0:
+            raise Exception(f"Subprocess failed with code {proc.returncode}: {output}")
+        
+        msg = f"[WORKER-{job_id}] ✓ Subprocess completed: {inserted} inserted, {skipped} skipped"
         logger.info(msg)
         print(msg)
         
@@ -241,63 +259,6 @@ async def _process_job(job_id: str, org_id: str, bot_id: str, filename: str,
         msg = f"[WORKER-{job_id}] ✅ COMPLETED: {inserted} documents ingested successfully!"
         logger.info(msg)
         print(msg)
-        
-        # Unload model to free memory
-        try:
-            from app.services.enhanced_rag import unload_model
-            import importlib
-            unload_model()
-            
-            # 1. Clear Unstructured's global model cache
-            try:
-                import unstructured
-                # Clear any cached models in unstructured's global state
-                if hasattr(unstructured, 'partition'):
-                    if hasattr(unstructured.partition, '_model_cache'):
-                        unstructured.partition._model_cache.clear()
-            except Exception:
-                pass
-            
-            # 2. Clear transformers model cache
-            try:
-                import transformers
-                if hasattr(transformers, 'models'):
-                    # Force reload of modules to clear cached models
-                    for module_name in list(sys.modules.keys()):
-                        if 'transformers' in module_name or 'unstructured' in module_name:
-                            try:
-                                del sys.modules[module_name]
-                            except Exception:
-                                pass
-            except Exception:
-                pass
-            
-            # 3. Clear PyTorch CUDA cache
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                torch.cuda.synchronize()  # Wait for GPU operations to complete
-            
-            # 4. Multiple rounds of aggressive garbage collection
-            # Collect all generations (0, 1, 2) to free deeply nested objects
-            for _ in range(3):
-                gc.collect(generation=2)
-            
-            # 5. Force malloc trim on Linux to release memory to OS
-            try:
-                if sys.platform == 'linux':
-                    libc = ctypes.CDLL('libc.so.6')
-                    libc.malloc_trim(0)  # Release all freeable memory
-            except Exception:
-                pass  # Skip on Windows or if unavailable
-            
-            # 6. Verify memory was freed
-            mem_after_mb = process.memory_info().rss / 1024 / 1024
-            freed_mb = mem_before_mb - mem_after_mb
-            msg = f"[WORKER-{job_id}] 🧹 Memory after cleanup: {mem_after_mb:.1f}MB (freed: {freed_mb:.1f}MB)"
-            logger.info(msg)
-            print(msg)
-        except Exception as e:
-            logger.warning(f"[WORKER-{job_id}] Failed to unload model: {e}")
     
     except Exception as e:
         msg = f"[WORKER-{job_id}] ❌ Processing failed: {e}"
