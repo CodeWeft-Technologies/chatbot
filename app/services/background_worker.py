@@ -154,9 +154,14 @@ async def _process_job(job_id: str, org_id: str, bot_id: str, filename: str,
         python_exe = sys.executable
         script_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'process_single_job.py')
         
+        # Convert UUIDs to strings for subprocess
+        job_id_str = str(job_id)
+        org_id_str = str(org_id)
+        bot_id_str = str(bot_id)
+        
         # Run subprocess and capture output
         proc = await asyncio.create_subprocess_exec(
-            python_exe, script_path, job_id, org_id, bot_id, filename,
+            python_exe, script_path, job_id_str, org_id_str, bot_id_str, filename,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=os.environ.copy()
