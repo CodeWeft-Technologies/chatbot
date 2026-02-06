@@ -31,6 +31,24 @@ def _consume_sse_text(resp: httpx.Response) -> str:
             break
     return "".join(parts).strip()
 
+
+def _format_for_whatsapp(text: str) -> str:
+    """
+    Convert response text to WhatsApp-friendly formatting.
+    - Converts **bold** to *bold*
+    - Converts [text](url) to text\nurl
+    - Preserves emojis and newlines
+    """
+    import re
+    
+    # Convert **bold** to *bold* (WhatsApp format)
+    text = re.sub(r'\*\*(.+?)\*\*', r'*\1*', text)
+    
+    # Convert markdown links [text](url) to text (url)
+    text = re.sub(r'\[(.+?)\]\((.+?)\)', r'\1\n\2', text)
+    
+    return text
+
 # Proxy image endpoint (must be after router is defined)
 @router.get("/proxy-image")
 async def proxy_image(url: str, request: Request):
@@ -4193,6 +4211,10 @@ def chat_whatsapp(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header
 
     if not answer:
         answer = "I don't have that information."
+    
+    # Format for WhatsApp display
+    answer = _format_for_whatsapp(answer)
+    
     return {"answer": answer}
 
 @router.get("/usage/{org_id}/{bot_id}")
