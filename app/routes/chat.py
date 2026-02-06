@@ -15,6 +15,22 @@ from app.config import settings
 router = APIRouter()
 client = Groq(api_key=settings.GROQ_API_KEY)
 
+
+def _consume_sse_text(resp: httpx.Response) -> str:
+    parts = []
+    for line in resp.iter_lines():
+        if not line:
+            continue
+        if isinstance(line, bytes):
+            line = line.decode("utf-8", errors="ignore")
+        if line.startswith("data:"):
+            data = line[5:].lstrip()
+            if data:
+                parts.append(data)
+        elif line.startswith("event: end"):
+            break
+    return "".join(parts).strip()
+
 # Proxy image endpoint (must be after router is defined)
 @router.get("/proxy-image")
 async def proxy_image(url: str, request: Request):
@@ -4149,6 +4165,35 @@ Always prioritize SHORT and INFORMATIVE responses."""
             _check_and_unload_if_idle()
         except Exception:
             pass
+
+
+@router.post("/chat/whatsapp/{bot_id}")
+def chat_whatsapp(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=None)):
+    base = (getattr(settings, "PUBLIC_API_BASE_URL", "") or "").rstrip("/")
+    if not base:
+        raise HTTPException(status_code=500, detail="PUBLIC_API_BASE_URL is not configured")
+
+    url = f"{base}/api/chat/stream/{bot_id}"
+    headers = {
+        "accept": "text/event-stream",
+        "content-type": "application/json",
+    }
+    if x_bot_key:
+        headers["X-Bot-Key"] = x_bot_key
+
+    try:
+        with httpx.Client(timeout=60.0) as client:
+            with client.stream("POST", url, headers=headers, json=body.dict()) as resp:
+                if resp.status_code != 200:
+                    detail = resp.text.strip() if resp.text else "Upstream error"
+                    raise HTTPException(status_code=resp.status_code, detail=detail)
+                answer = _consume_sse_text(resp)
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=502, detail=f"Upstream error: {e}")
+
+    if not answer:
+        answer = "I don't have that information."
+    return {"answer": answer}
 
 @router.get("/usage/{org_id}/{bot_id}")
 def usage(org_id: str, bot_id: str, days: int = 30, authorization: Optional[str] = Header(default=None)):
