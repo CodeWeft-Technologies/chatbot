@@ -53,7 +53,10 @@ def _format_for_whatsapp(text: str) -> str:
 def _fetch_appointment_by_email(conn, email: str, bot_id: str, org_id: str) -> tuple:
     """
     Fetch latest appointment for an email address.
-    Returns (appointment_id, external_event_id, start_iso, end_iso, status) or None
+    Returns tuple with same structure as _get_appointment_by_id():
+    - From bookings: (event_id, start_iso, end_iso, status, 'bookings', name, email, phone, resource)
+    - From bot_appointments: (event_id, start_iso, end_iso, status, 'bot_appointments', attendees_json)
+    Returns None if not found
     """
     import re
     from app.db import normalize_org_id
@@ -67,10 +70,14 @@ def _fetch_appointment_by_email(conn, email: str, bot_id: str, org_id: str) -> t
             # Search in bookings table for this email (most recent non-cancelled)
             cur.execute(
                 """
-                SELECT id, calendar_event_id, 
+                SELECT calendar_event_id, 
                        (booking_date::text || 'T' || start_time::text) as start_iso,
                        (booking_date::text || 'T' || end_time::text) as end_iso,
-                       status
+                       status,
+                       customer_name,
+                       customer_email,
+                       customer_phone,
+                       resource_name
                 FROM bookings 
                 WHERE customer_email=%s 
                   AND (org_id=%s or org_id::text=%s) 
@@ -83,12 +90,13 @@ def _fetch_appointment_by_email(conn, email: str, bot_id: str, org_id: str) -> t
             )
             row = cur.fetchone()
             if row:
-                return row
+                # Return: (event_id, start_iso, end_iso, status, 'bookings', name, email, phone, resource)
+                return (row[0], row[1], row[2], row[3], 'bookings', row[4], row[5], row[6], row[7]) if row else None
             
             # Also search bot_appointments if not found in bookings
             cur.execute(
                 """
-                SELECT id, external_event_id, start_iso, end_iso, status
+                SELECT external_event_id, start_iso, end_iso, status, attendees_json
                 FROM bot_appointments
                 WHERE (attendees_json::text ILIKE %s 
                        OR attendees_json::text ILIKE %s)
@@ -101,7 +109,11 @@ def _fetch_appointment_by_email(conn, email: str, bot_id: str, org_id: str) -> t
                 (f'%{email}%', f'%"{email}"%', normalize_org_id(org_id), org_id, bot_id),
             )
             row = cur.fetchone()
-            return row
+            if row:
+                # Return: (event_id, start_iso, end_iso, status, 'bot_appointments', attendees_json)
+                return (row[0], row[1], row[2], row[3], 'bot_appointments', row[4])
+            
+            return None
     except Exception as e:
         print(f"Error fetching appointment by email: {e}")
         return None
@@ -4271,8 +4283,10 @@ def chat_whatsapp(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header
             except (ValueError, IndexError):
                 pass
         
-        # Check for appointment status by email
-        email_match = re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", msg)
+        # Check for appointment status by email (only if "status" keyword or email at start)
+        email_match = None
+        if "status" in msg_lower:
+            email_match = re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", msg)
         
         # If appointment ID found, fetch by ID
         if ap_id and ("status" in msg_lower or "cancel" in msg_lower or "reschedule" in msg_lower):
