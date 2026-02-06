@@ -49,6 +49,63 @@ def _format_for_whatsapp(text: str) -> str:
     
     return text
 
+
+def _fetch_appointment_by_email(conn, email: str, bot_id: str, org_id: str) -> tuple:
+    """
+    Fetch latest appointment for an email address.
+    Returns (appointment_id, external_event_id, start_iso, end_iso, status) or None
+    """
+    import re
+    from app.db import normalize_org_id
+    
+    # Validate email format
+    if not re.match(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", email):
+        return None
+    
+    try:
+        with conn.cursor() as cur:
+            # Search in bookings table for this email (most recent non-cancelled)
+            cur.execute(
+                """
+                SELECT id, calendar_event_id, 
+                       (booking_date::text || 'T' || start_time::text) as start_iso,
+                       (booking_date::text || 'T' || end_time::text) as end_iso,
+                       status
+                FROM bookings 
+                WHERE customer_email=%s 
+                  AND (org_id=%s or org_id::text=%s) 
+                  AND bot_id=%s
+                  AND status NOT IN ('cancelled')
+                ORDER BY booking_date DESC, start_time DESC
+                LIMIT 1
+                """,
+                (email, normalize_org_id(org_id), org_id, bot_id),
+            )
+            row = cur.fetchone()
+            if row:
+                return row
+            
+            # Also search bot_appointments if not found in bookings
+            cur.execute(
+                """
+                SELECT id, external_event_id, start_iso, end_iso, status
+                FROM bot_appointments
+                WHERE (attendees_json::text ILIKE %s 
+                       OR attendees_json::text ILIKE %s)
+                  AND (org_id=%s or org_id::text=%s)
+                  AND bot_id=%s
+                  AND status NOT IN ('cancelled')
+                ORDER BY start_iso DESC
+                LIMIT 1
+                """,
+                (f'%{email}%', f'%"{email}"%', normalize_org_id(org_id), org_id, bot_id),
+            )
+            row = cur.fetchone()
+            return row
+    except Exception as e:
+        print(f"Error fetching appointment by email: {e}")
+        return None
+
 # Proxy image endpoint (must be after router is defined)
 @router.get("/proxy-image")
 async def proxy_image(url: str, request: Request):
@@ -4187,35 +4244,214 @@ Always prioritize SHORT and INFORMATIVE responses."""
 
 @router.post("/chat/whatsapp/{bot_id}")
 def chat_whatsapp(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header(default=None)):
+    import re
+    from app.db import normalize_org_id
+    from app.services.calendar_google import _decrypt, build_service_from_tokens, get_event_oauth
+    
     base = (getattr(settings, "PUBLIC_API_BASE_URL", "") or "").rstrip("/")
     if not base:
         raise HTTPException(status_code=500, detail="PUBLIC_API_BASE_URL is not configured")
 
-    url = f"{base}/api/chat/stream/{bot_id}"
-    headers = {
-        "accept": "text/event-stream",
-        "content-type": "application/json",
-    }
-    if x_bot_key:
-        headers["X-Bot-Key"] = x_bot_key
-
+    conn = get_conn()
     try:
-        with httpx.Client(timeout=60.0) as client:
-            with client.stream("POST", url, headers=headers, json=body.dict()) as resp:
-                if resp.status_code != 200:
-                    detail = resp.text.strip() if resp.text else "Upstream error"
-                    raise HTTPException(status_code=resp.status_code, detail=detail)
-                answer = _consume_sse_text(resp)
-    except httpx.RequestError as e:
-        raise HTTPException(status_code=502, detail=f"Upstream error: {e}")
+        behavior, system_prompt, public_api_key = get_bot_meta(conn, bot_id, body.org_id)
+        if public_api_key:
+            if not x_bot_key or x_bot_key != public_api_key:
+                raise HTTPException(status_code=403, detail="Invalid bot key")
+        
+        msg = body.message.strip()
+        msg_lower = msg.lower()
+        
+        # Check for appointment status by ID: "status id 20" or "id 20" or "20"
+        ap_id = None
+        m_id = re.search(r"\b(?:status\s+)?(?:id\s*[:#]?\s*)?(\d+)\b", msg, re.IGNORECASE)
+        if m_id:
+            try:
+                ap_id = int(m_id.group(1))
+            except (ValueError, IndexError):
+                pass
+        
+        # Check for appointment status by email
+        email_match = re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", msg)
+        
+        # If appointment ID found, fetch by ID
+        if ap_id and ("status" in msg_lower or "cancel" in msg_lower or "reschedule" in msg_lower):
+            appointment_data = _get_appointment_by_id(conn, ap_id, bot_id, body.org_id)
+            if appointment_data:
+                answer = _build_appointment_status_text(conn, bot_id, body.org_id, appointment_data, msg_lower)
+            else:
+                answer = f"❌ Appointment ID {ap_id} not found."
+        
+        # If email found, fetch by email
+        elif email_match:
+            email = email_match.group(0)
+            appointment_data = _fetch_appointment_by_email(conn, email, bot_id, body.org_id)
+            if appointment_data:
+                answer = _build_appointment_status_text(conn, bot_id, body.org_id, appointment_data, "status")
+            else:
+                answer = f"📭 No appointments found for {email}"
+        
+        # Otherwise, use the stream API
+        else:
+            url = f"{base}/api/chat/stream/{bot_id}"
+            headers = {
+                "accept": "text/event-stream",
+                "content-type": "application/json",
+            }
+            if x_bot_key:
+                headers["X-Bot-Key"] = x_bot_key
 
-    if not answer:
-        answer = "I don't have that information."
+            try:
+                with httpx.Client(timeout=60.0) as client:
+                    with client.stream("POST", url, headers=headers, json=body.dict()) as resp:
+                        if resp.status_code != 200:
+                            detail = resp.text.strip() if resp.text else "Upstream error"
+                            raise HTTPException(status_code=resp.status_code, detail=detail)
+                        answer = _consume_sse_text(resp)
+            except httpx.RequestError as e:
+                raise HTTPException(status_code=502, detail=f"Upstream error: {e}")
+
+        if not answer:
+            answer = "I don't have that information."
+        
+        # Format for WhatsApp display
+        answer = _format_for_whatsapp(answer)
+        
+        return {"answer": answer}
+    finally:
+        conn.close()
+
+
+def _get_appointment_by_id(conn, ap_id: int, bot_id: str, org_id: str) -> tuple:
+    """Fetch appointment by ID from either table"""
+    from app.db import normalize_org_id
     
-    # Format for WhatsApp display
-    answer = _format_for_whatsapp(answer)
+    try:
+        with conn.cursor() as cur:
+            # Try bot_appointments first
+            cur.execute(
+                "select external_event_id, start_iso, end_iso, status, 'bot_appointments' as source, attendees_json from bot_appointments where id=%s and (org_id=%s or org_id::text=%s) and bot_id=%s",
+                (ap_id, normalize_org_id(org_id), org_id, bot_id),
+            )
+            row = cur.fetchone()
+            if row:
+                return row
+            
+            # Try bookings table
+            cur.execute(
+                """
+                select calendar_event_id, 
+                       (booking_date::text || 'T' || start_time::text) as start_iso,
+                       (booking_date::text || 'T' || end_time::text) as end_iso,
+                       status,
+                       'bookings' as source,
+                       customer_name,
+                       customer_email,
+                       customer_phone,
+                       resource_name
+                from bookings 
+                where id=%s and (org_id=%s or org_id::text=%s) and bot_id=%s
+                """,
+                (ap_id, normalize_org_id(org_id), org_id, bot_id),
+            )
+            row = cur.fetchone()
+            return row
+    except Exception as e:
+        print(f"Error fetching appointment by ID: {e}")
+        return None
+
+
+def _build_appointment_status_text(conn, bot_id: str, org_id: str, appointment_data: tuple, action: str) -> str:
+    """Build formatted appointment status text for WhatsApp"""
+    import json
+    from datetime import datetime
+    from app.services.calendar_google import _decrypt, build_service_from_tokens, get_event_oauth
+    from app.db import normalize_org_id
     
-    return {"answer": answer}
+    try:
+        ev_id, cur_si, cur_ei, cur_st, source = appointment_data[:5]
+        
+        # Try to fetch Google Calendar event for richer details
+        svc = None
+        cal_id = None
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "select calendar_id, access_token_enc, refresh_token_enc, token_expiry from bot_calendar_oauth where (org_id=%s or org_id::text=%s) and bot_id=%s and provider=%s",
+                    (normalize_org_id(org_id), org_id, bot_id, "google"),
+                )
+                c = cur.fetchone()
+            if c:
+                cal_id, at_enc, rt_enc, exp = c
+                at = _decrypt(at_enc) if at_enc else None
+                rt = _decrypt(rt_enc) if rt_enc else None
+                svc = build_service_from_tokens(at or "", rt, exp)
+        except Exception:
+            pass
+        
+        # Format appointment status
+        msg_lines = []
+        
+        # Get event details from Google if available
+        g_event = None
+        if svc and ev_id:
+            try:
+                g_event = get_event_oauth(svc, cal_id or "primary", ev_id)
+            except Exception:
+                pass
+        
+        if g_event:
+            summary = g_event.get('summary', 'Appointment')
+            start = g_event.get('start', {}).get('dateTime', g_event.get('start', {}).get('date'))
+            end = g_event.get('end', {}).get('dateTime', g_event.get('end', {}).get('date'))
+            
+            try:
+                dt_start = datetime.fromisoformat(start.replace('Z', '+00:00'))
+                dt_end = datetime.fromisoformat(end.replace('Z', '+00:00'))
+                time_str = f"{dt_start.strftime('%b %d, %Y at %I:%M %p')} - {dt_end.strftime('%I:%M %p')}"
+            except:
+                time_str = f"{start} to {end}"
+            
+            msg_lines.append(f"*{summary}*")
+            msg_lines.append(f"")
+            msg_lines.append(f"🕒 {time_str}")
+            msg_lines.append(f"✅ Status: {g_event.get('status', 'confirmed')}")
+            
+            if g_event.get('description'):
+                msg_lines.append(f"📝 {g_event['description']}")
+        else:
+            # Fallback format for database-only data
+            try:
+                dt_s = datetime.fromisoformat(cur_si)
+                dt_e = datetime.fromisoformat(cur_ei)
+                time_str = f"{dt_s.strftime('%b %d, %Y at %I:%M %p')} - {dt_e.strftime('%I:%M %p')}"
+            except:
+                time_str = f"{cur_si} to {cur_ei}"
+            
+            if source == "bookings" and len(appointment_data) > 5:
+                customer_name = appointment_data[5] if len(appointment_data) > 5 else None
+                customer_email = appointment_data[6] if len(appointment_data) > 6 else None
+                customer_phone = appointment_data[7] if len(appointment_data) > 7 else None
+                resource_name = appointment_data[8] if len(appointment_data) > 8 else None
+                
+                msg_lines.append("*Appointment Details*")
+                msg_lines.append("")
+                if customer_name:
+                    msg_lines.append(f"👤 Name: {customer_name}")
+                if customer_email:
+                    msg_lines.append(f"📧 Email: {customer_email}")
+                if customer_phone:
+                    msg_lines.append(f"📱 Phone: {customer_phone}")
+                if resource_name:
+                    msg_lines.append(f"👨‍⚕️ Service: {resource_name}")
+            
+            msg_lines.append(f"🕒 {time_str}")
+            msg_lines.append(f"✅ Status: {cur_st}")
+        
+        return "\n".join(msg_lines)
+    except Exception as e:
+        print(f"Error building appointment status: {e}")
+        return "📭 Unable to fetch appointment details. Please try again."
 
 @router.get("/usage/{org_id}/{bot_id}")
 def usage(org_id: str, bot_id: str, days: int = 30, authorization: Optional[str] = Header(default=None)):
