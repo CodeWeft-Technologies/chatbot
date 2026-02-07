@@ -4288,13 +4288,67 @@ def chat_whatsapp(bot_id: str, body: ChatBody, x_bot_key: Optional[str] = Header
         if "status" in msg_lower:
             email_match = re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", msg)
         
-        # If appointment ID found, fetch by ID
+        # If appointment ID found, process based on action
         if ap_id and ("status" in msg_lower or "cancel" in msg_lower or "reschedule" in msg_lower):
-            appointment_data = _get_appointment_by_id(conn, ap_id, bot_id, body.org_id)
-            if appointment_data:
-                answer = _build_appointment_status_text(conn, bot_id, body.org_id, appointment_data, msg_lower)
+            # Handle cancel action
+            if "cancel" in msg_lower:
+                try:
+                    with conn.cursor() as cur:
+                        # Check if booking exists
+                        cur.execute("""
+                            select id, status, booking_date, start_time 
+                            from bookings
+                            where id = %s and bot_id = %s and org_id = %s
+                        """, (ap_id, bot_id, body.org_id))
+                        booking = cur.fetchone()
+                        
+                        if not booking:
+                            answer = f"❌ Appointment ID {ap_id} not found."
+                        else:
+                            booking_id, current_status, booking_date, start_time = booking
+                            
+                            # Check if already cancelled
+                            if current_status and current_status.lower() == 'cancelled':
+                                answer = f"✅ Appointment ID {ap_id} was already cancelled."
+                            else:
+                                # Check if past appointment
+                                from datetime import datetime
+                                try:
+                                    import datetime as dt
+                                    booking_datetime = dt.datetime.combine(booking_date, start_time)
+                                    now = dt.datetime.now()
+                                    
+                                    if booking_datetime <= now:
+                                        answer = f"❌ Cannot cancel past appointments (ID {ap_id})."
+                                    else:
+                                        # Update to cancelled status
+                                        cur.execute("""
+                                            update bookings 
+                                            set status = 'cancelled', updated_at = now()
+                                            where id = %s
+                                        """, (ap_id,))
+                                        conn.commit()
+                                        answer = f"✅ Appointment ID {ap_id} has been successfully cancelled."
+                                except Exception as e:
+                                    print(f"Error checking appointment date: {e}")
+                                    # Try to cancel anyway
+                                    cur.execute("""
+                                        update bookings 
+                                        set status = 'cancelled', updated_at = now()
+                                        where id = %s
+                                    """, (ap_id,))
+                                    conn.commit()
+                                    answer = f"✅ Appointment ID {ap_id} has been successfully cancelled."
+                except Exception as e:
+                    print(f"Error cancelling appointment: {e}")
+                    answer = f"❌ Error cancelling appointment ID {ap_id}. Please try again."
             else:
-                answer = f"❌ Appointment ID {ap_id} not found."
+                # Handle status/reschedule action
+                appointment_data = _get_appointment_by_id(conn, ap_id, bot_id, body.org_id)
+                if appointment_data:
+                    answer = _build_appointment_status_text(conn, bot_id, body.org_id, appointment_data, msg_lower)
+                else:
+                    answer = f"❌ Appointment ID {ap_id} not found."
         
         # If email found, fetch by email
         elif email_match:
