@@ -2891,7 +2891,7 @@ BAD: We have the capability to assist you with scheduling appointments. Our syst
                     logging.warning(f"[CHAT_NO_KNOWLEDGE] Large message context detected: {total_chars} chars, messages: {len(messages)}")
                 
                 resp = client.chat.completions.create(
-                    model="llama-3.3-70b-versatile",
+                    model="meta-llama/llama-4-scout-17b-16e-instruct",
                     temperature=0.5,
                     max_tokens=1000,
                     messages=messages,
@@ -2970,7 +2970,7 @@ Always prioritize SHORT and INFORMATIVE responses."""
                 logging.warning(f"[CHAT] Large message context detected: {total_chars} chars, messages: {len(messages)}")
             
             resp = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+                model="meta-llama/llama-4-scout-17b-16e-instruct",
                 temperature=0.2,
                 max_tokens=1000,
                 messages=messages,
@@ -4157,7 +4157,7 @@ Always prioritize SHORT and INFORMATIVE responses."""
                 messages.append({"role": "user", "content": user})
                 
                 resp = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+                model="meta-llama/llama-4-scout-17b-16e-instruct",
                 temperature=0.3,  # Higher than before for more natural, varied responses
                 top_p=0.9,  # Nucleus sampling for better quality
                 max_tokens=1000,
