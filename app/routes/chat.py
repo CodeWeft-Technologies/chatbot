@@ -4149,6 +4149,7 @@ Always prioritize SHORT and INFORMATIVE responses."""
 
         def gen():
             full_response = ""
+            stream_success = False
             try:
                 # Build messages with conversation history
                 messages = [{"role": "system", "content": system}]
@@ -4195,10 +4196,31 @@ Always prioritize SHORT and INFORMATIVE responses."""
                     buf = _re.sub(r'\+([A-Za-z])', r'+ \1', buf)
                     yield f"data: {buf}\n\n"
                 
+                # Mark success - response was streamed successfully
+                stream_success = True
+            except Exception as e:
+                # Only catch errors during actual streaming
+                print(f"Error during streaming: {e}", flush=True)
+                text = "I don't have that information."
+                yield f"data: {text}\n\n"
+                stream_success = False
+                try:
+                    cconn = get_conn()
+                    try:
+                        _ensure_usage_table(cconn)
+                        _log_chat_usage(cconn, body.org_id, bot_id, 0.0, True)
+                    finally:
+                        cconn.close()
+                except Exception:
+                    pass
+            finally:
+                yield "event: end\n\n"
+            
+            # Background operations - AFTER streaming is complete
+            # Only save/log if streaming was successful
+            if stream_success:
                 # Apply formatting to complete response before saving
                 formatted_response = _format_response(full_response)
-                
-                yield "event: end\n\n"
                 
                 # Save to conversation history after streaming completes
                 if body.session_id and formatted_response:
@@ -4221,23 +4243,6 @@ Always prioritize SHORT and INFORMATIVE responses."""
                         if not isfinite(simv):
                             simv = 0.0
                         _log_chat_usage(cconn, body.org_id, bot_id, simv, False)
-                    finally:
-                        cconn.close()
-                except Exception:
-                    pass
-            except Exception:
-                from math import isfinite
-                sim = float(chunks[0][2])
-                if not isfinite(sim):
-                    sim = 0.0
-                text = "I don't have that information."
-                yield f"data: {text}\n\n"
-                yield "event: end\n\n"
-                try:
-                    cconn = get_conn()
-                    try:
-                        _ensure_usage_table(cconn)
-                        _log_chat_usage(cconn, body.org_id, bot_id, 0.0, True)
                     finally:
                         cconn.close()
                 except Exception:
